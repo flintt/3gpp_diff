@@ -72,7 +72,10 @@ body {
   color: var(--accent);
   text-shadow: 0 0 10px var(--accent-glow);
   display: inline-block;
-  animation: rotateGear 10s linear infinite;
+}
+
+.header h1:hover span {
+  animation: rotateGear 2s linear infinite;
 }
 
 @keyframes rotateGear {
@@ -367,17 +370,12 @@ body {
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-secondary);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-  transition: border-color 0.2s ease, transform 0.2s ease;
-}
-
-.clause-diff:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .clause-diff-header {
   padding: 16px 24px;
-  background: rgba(31, 41, 55, 0.4);
+  background: #1e293b;
   border-bottom: 1px solid var(--border-color);
   font-weight: 600;
   font-size: 15px;
@@ -387,8 +385,6 @@ body {
   position: sticky;
   top: 0;
   z-index: 2;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .clause-diff-header .clause-id {
