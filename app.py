@@ -4,21 +4,61 @@
 import json
 import os
 import threading
+import logging
 from pathlib import Path
+from collections import OrderedDict
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request, send_from_directory, abort, Response
 
 from spec_fetcher import list_versions, extract_doc_path, list_cached_versions, download_spec, CACHE_DIR
 from spec_parser import parse_spec, clause_count
 from diff_engine import diff_trees, compute_diff_stats, compute_line_diff
 
+# Setup logging
+Path("cache").mkdir(exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("cache/app.log", encoding="utf-8")
+    ]
+)
+logger = logging.getLogger("3gpp_diff")
+
 app = Flask(__name__, static_folder="static")
 
-# Cache for parsed specs (in-memory)
-_parsed_cache = {}
+# ThreadPoolExecutor for background downloads & precomputations
+_executor = ThreadPoolExecutor(max_workers=4)
 
-# Cache for computed diff results (in-memory)
-# Key: f"{spec}@{v1}→{v2}", Value: dict (the diff result)
-_diff_cache = {}
+# Thread-safe LRU Cache for computed diff results
+class LRUCache:
+    def __init__(self, maxsize=10):
+        self.cache = OrderedDict()
+        self.maxsize = maxsize
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            return None
+
+    def set(self, key, value):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            self.cache[key] = value
+            if len(self.cache) > self.maxsize:
+                self.cache.popitem(last=False)
+
+    def __contains__(self, key):
+        with self.lock:
+            return key in self.cache
+
+_diff_cache = LRUCache(maxsize=10)
 _diff_cache_dir = Path("cache") / "diffs"
 
 # Known spec titles (fallback when not parsed)
@@ -117,15 +157,11 @@ def _ver_cmp(v1: str, v2: str) -> int:
     return len(p1) - len(p2)
 
 
+@lru_cache(maxsize=16)
 def _get_parsed(spec: str, version: str) -> dict:
-    """Get parsed spec (cached)."""
-    cache_key = f"{spec}@{version}"
-    if cache_key in _parsed_cache:
-        return _parsed_cache[cache_key]
-
+    """Get parsed spec (cached with LRU)."""
     doc_path = extract_doc_path(spec, version)
     parsed = parse_spec(doc_path, spec_number=spec, version=version)
-    _parsed_cache[cache_key] = parsed
     return parsed
 
 
@@ -165,11 +201,12 @@ def api_diff():
 
     if not refresh:
         # Normal request: memory → disk → compute
-        if cache_key in _diff_cache:
-            return jsonify(_diff_cache[cache_key])
+        cached_result = _diff_cache.get(cache_key)
+        if cached_result is not None:
+            return jsonify(cached_result)
         disk_result = _load_diff_from_disk(spec, v1, v2)
         if disk_result is not None:
-            _diff_cache[cache_key] = disk_result
+            _diff_cache.set(cache_key, disk_result)
             return jsonify(disk_result)
     # refresh=1: skip both caches, force recompute
 
@@ -191,7 +228,7 @@ def api_diff():
             "stats": stats,
             "clauses": diff,
         }
-        _diff_cache[cache_key] = result
+        _diff_cache.set(cache_key, result)
         _save_diff_to_disk(spec, v1, v2, result)
         return jsonify(result)
     except Exception as e:
@@ -221,12 +258,13 @@ def api_diff_stream():
         cache_key = f"{spec}@{v1}→{v2}"
 
         if not refresh:
-            if cache_key in _diff_cache:
-                yield f"event:done\ndata:{json.dumps(_diff_cache[cache_key])}\n\n"
+            cached_result = _diff_cache.get(cache_key)
+            if cached_result is not None:
+                yield f"event:done\ndata:{json.dumps(cached_result)}\n\n"
                 return
             disk_result = _load_diff_from_disk(spec, v1, v2)
             if disk_result is not None:
-                _diff_cache[cache_key] = disk_result
+                _diff_cache.set(cache_key, disk_result)
                 yield f"event:done\ndata:{json.dumps(disk_result)}\n\n"
                 return
 
@@ -262,7 +300,7 @@ def api_diff_stream():
             "stats": stats,
             "clauses": diff,
         }
-        _diff_cache[cache_key] = result
+        _diff_cache.set(cache_key, result)
         _save_diff_to_disk(spec, v1, v2, result)
         yield f"event:done\ndata:{json.dumps(result)}\n\n"
 
@@ -354,7 +392,7 @@ def _download_all_releases(spec: str):
             if not to_download:
                 raise ValueError("No releases found on FTP")
         except Exception:
-            print(f"[download] FTP listing slow/unavailable, trying known releases")
+            logger.info(f"[download] FTP listing slow/unavailable, trying known releases")
             to_download = [f"{r}.0.0" for r in range(15, 21)]  # Rel-15 through Rel-20
 
         # Download each release
@@ -365,15 +403,14 @@ def _download_all_releases(spec: str):
                 download_spec(spec, ver)
                 downloaded.append(ver)
             except Exception as e:
-                print(f"[download] {spec} v{ver} not available: {e}")
+                logger.error(f"[download] {spec} v{ver} not available: {e}")
             _download_progress[spec] = {"status": "downloading", "total": len(to_download), "done": i + 1, "versions": downloaded}
 
         _download_progress[spec] = {"status": "completed", "total": len(to_download), "done": len(downloaded), "versions": downloaded}
-        print(f"[download] ✓ {spec}: {len(downloaded)} releases downloaded")
+        logger.info(f"[download] ✓ {spec}: {len(downloaded)} releases downloaded")
 
         # Trigger precomputation in background now that ZIPs are available
-        t = threading.Thread(target=_precompute_diffs, args=(spec,), daemon=True)
-        t.start()
+        _executor.submit(_precompute_diffs, spec)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -391,8 +428,7 @@ def api_download():
         return jsonify({"error": "spec required"}), 400
     if spec in _download_active:
         return jsonify({"status": "already_running", "spec": spec})
-    t = threading.Thread(target=_download_all_releases, args=(spec,), daemon=True)
-    t.start()
+    _executor.submit(_download_all_releases, spec)
     return jsonify({"status": "started", "spec": spec})
 
 
@@ -413,7 +449,7 @@ _precompute_status = {}     # spec → {status, total, done, pairs}
 def _precompute_diffs(spec="23.501", max_releases=6):
     """Compute diffs between cached release pairs (full mesh) in background."""
     if spec in _precompute_active:
-        print(f"[precompute] {spec}: already running, skipping")
+        logger.info(f"[precompute] {spec}: already running, skipping")
         return
     _precompute_active.add(spec)
     try:
@@ -444,11 +480,11 @@ def _precompute_diffs(spec="23.501", max_releases=6):
         }
 
         if not to_compute:
-            print(f"[precompute] {spec}: all {len(pairs)} diffs already cached")
+            logger.info(f"[precompute] {spec}: all {len(pairs)} diffs already cached")
             _precompute_status[spec]["status"] = "completed"
             return
 
-        print(f"[precompute] Will compute {len(to_compute)} diffs for {spec} ({already_done} already cached)")
+        logger.info(f"[precompute] Will compute {len(to_compute)} diffs for {spec} ({already_done} already cached)")
         for idx, (v1, v2) in enumerate(to_compute):
             cache_key = f"{spec}@{v1}→{v2}"
             try:
@@ -466,17 +502,17 @@ def _precompute_diffs(spec="23.501", max_releases=6):
                     "stats": stats,
                     "clauses": diff,
                 }
-                _diff_cache[cache_key] = result
+                _diff_cache.set(cache_key, result)
                 _save_diff_to_disk(spec, v1, v2, result)
                 _precompute_status[spec]["done"] = already_done + idx + 1
-                print(f"[precompute] ✓ {v1} → {v2} ({stats['modified']} modified, {stats['added']} added, {stats['deleted']} deleted)")
+                logger.info(f"[precompute] ✓ {v1} → {v2} ({stats['modified']} modified, {stats['added']} added, {stats['deleted']} deleted)")
             except Exception as e:
-                print(f"[precompute] ✗ {v1} → {v2}: {e}")
+                logger.error(f"[precompute] ✗ {v1} → {v2}: {e}")
             # Yield GIL so Flask request threads can make progress
             import time
             time.sleep(0.1)
         _precompute_status[spec]["status"] = "completed"
-        print(f"[precompute] {spec}: done ({_precompute_status[spec]['done']}/{len(pairs)} diffs)")
+        logger.info(f"[precompute] {spec}: done ({_precompute_status[spec]['done']}/{len(pairs)} diffs)")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -494,8 +530,7 @@ def api_precompute():
         return jsonify({"error": "spec required"}), 400
     if spec in _precompute_active:
         return jsonify({"status": "already_running", "spec": spec})
-    t = threading.Thread(target=_precompute_diffs, args=(spec,), daemon=True)
-    t.start()
+    _executor.submit(_precompute_diffs, spec)
     return jsonify({"status": "started", "spec": spec})
 
 
@@ -551,5 +586,5 @@ if __name__ == "__main__":
     Path("cache").mkdir(exist_ok=True)
 
     port = int(os.environ.get("PORT", 5001))
-    print(f"3GPP Diff Tool starting on http://0.0.0.0:{port}")
+    logger.info(f"3GPP Diff Tool starting on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
