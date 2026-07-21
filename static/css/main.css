@@ -1035,9 +1035,8 @@ svg {
 }
 
 .clause-diff-header {
-  position: sticky;
-  top: -1px;
-  z-index: 3;
+  position: relative;
+  z-index: 1;
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -1069,7 +1068,7 @@ svg {
   flex: 0 0 auto;
   align-items: center;
   gap: 5px;
-  margin-left: auto;
+  margin-left: 0;
   font-family: var(--font-mono);
   white-space: nowrap;
 }
@@ -1100,7 +1099,7 @@ svg {
 
 .status-badge {
   flex: 0 0 auto;
-  margin-left: 0;
+  margin-left: auto;
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 3px 7px;
@@ -1862,18 +1861,19 @@ svg {
   }
 
   .clause-diff-header .clause-title {
-    flex: 1 1 calc(100% - 90px);
+    order: 4;
+    flex: 1 1 100%;
     white-space: normal;
   }
 
   .clause-version-context {
-    order: 3;
+    order: 2;
     margin-left: 0;
   }
 
   .status-badge {
-    order: 4;
-    margin-left: 0;
+    order: 3;
+    margin-left: auto;
   }
 
   .clause-nav {

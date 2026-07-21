@@ -663,8 +663,8 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   return `<article class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
     <div class="clause-diff-header">
       <span class="clause-id">${escapeHtml(display.id)}</span>
-      <span class="clause-title">${escapeHtml(display.title)}</span>
       ${versionContextHtml}
+      <span class="clause-title">${escapeHtml(display.title)}</span>
       <span class="status-badge ${status}">${status}</span>
     </div>
     ${bodyHtml}
