@@ -3,8 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0b1220">
+  <meta name="theme-color" id="themeColorMeta" content="#0b1220">
   <title>3GPP Delta — Specification comparison</title>
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('3gpp-delta-theme');
+        const theme = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.dataset.theme = theme;
+        document.getElementById('themeColorMeta').setAttribute('content', theme === 'light' ? '#f6f8fc' : '#0b1220');
+      } catch (_) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="static/css/main.css">
 </head>
 <body>
@@ -22,6 +34,10 @@
       <span class="brand-kicker">Release intelligence</span>
       <h1>3GPP <span>Delta</span></h1>
     </div>
+    <button class="icon-btn theme-toggle" id="themeToggle" type="button" aria-label="Switch to light theme" title="Switch to light theme">
+      <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg>
+      <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.3A8.5 8.5 0 0 1 8.7 3.8 8.5 8.5 0 1 0 20.2 15.3Z"/></svg>
+    </button>
   </div>
 
   <div class="comparison-toolbar" aria-label="Specification comparison controls">

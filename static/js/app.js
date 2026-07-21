@@ -11,6 +11,21 @@ const $ = id => document.getElementById(id);
 const _escDiv = document.createElement('div');
 const escapeHtml = str => { _escDiv.textContent = str; return _escDiv.innerHTML; };
 
+const THEME_STORAGE_KEY = '3gpp-delta-theme';
+
+function applyTheme(theme, persist = false) {
+  const nextTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = nextTheme;
+  $('themeColorMeta').setAttribute('content', nextTheme === 'light' ? '#f6f8fc' : '#0b1220');
+  const toggle = $('themeToggle');
+  const targetTheme = nextTheme === 'light' ? 'dark' : 'light';
+  toggle.setAttribute('aria-label', `Switch to ${targetTheme} theme`);
+  toggle.setAttribute('title', `Switch to ${targetTheme} theme`);
+  if (persist) {
+    try { localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch (_) {}
+  }
+}
+
 // ===================== TOAST NOTIFICATIONS =====================
 function showToast(msg, type = 'info') {
   const container = $('toastContainer');
@@ -1179,6 +1194,18 @@ document.querySelector('.lightbox-controls').addEventListener('click', event => 
 
 $('navPrevious').addEventListener('click', () => window.navChanged(-1));
 $('navNext').addEventListener('click', () => window.navChanged(1));
+
+const systemThemeQuery = window.matchMedia('(prefers-color-scheme: light)');
+applyTheme(document.documentElement.dataset.theme, false);
+$('themeToggle').addEventListener('click', () => {
+  const nextTheme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  applyTheme(nextTheme, true);
+});
+systemThemeQuery.addEventListener('change', event => {
+  try {
+    if (!localStorage.getItem(THEME_STORAGE_KEY)) applyTheme(event.matches ? 'light' : 'dark');
+  } catch (_) {}
+});
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
