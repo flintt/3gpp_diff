@@ -4,6 +4,7 @@ Compares two structured clause trees and produces a diff tree.
 """
 import difflib
 import re
+from collections import Counter, defaultdict
 
 
 def diff_trees(old_clauses: list, new_clauses: list) -> list:
@@ -19,7 +20,7 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
     This function only processes top-level nodes; recursion handles children.
     """
     old_by_id = _build_id_map(old_clauses)
-    new_by_id = _build_id_map(new_clauses)
+    new_id_counts = Counter(node.get("id", "") for node in new_clauses)
 
     result = []
     processed_old_ids = set()
@@ -29,7 +30,13 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
         nid = new_node["id"]
         key = _clause_sort_key(nid)
 
-        old_node = old_by_id.get(nid)
+        candidates = old_by_id.get(nid, [])
+        old_node = _select_old_node(
+            candidates,
+            new_node,
+            processed_old_ids,
+            require_title_similarity=(len(candidates) > 1 or new_id_counts[nid] > 1),
+        )
 
         if old_node is not None:
             processed_old_ids.add(id(old_node))
@@ -113,14 +120,53 @@ def _clause_sort_key(clause_id: str):
 
 
 def _build_id_map(clauses: list) -> dict:
-    """Build flat id -> node mapping."""
-    mapping = {}
+    """Build a sibling-level id -> nodes mapping, preserving duplicates."""
+    mapping = defaultdict(list)
     for node in clauses:
         nid = node["id"]
         if nid:
-            mapping[nid] = node
-        mapping.update(_build_id_map(node.get("children", [])))
-    return mapping
+            mapping[nid].append(node)
+    return dict(mapping)
+
+
+def _select_old_node(
+    candidates: list,
+    new_node: dict,
+    processed_old_ids: set,
+    require_title_similarity: bool,
+):
+    """Select at most one old sibling for a new clause.
+
+    Duplicate or malformed clause IDs occur in some source documents. Title
+    similarity prevents one old clause from being paired with several unrelated
+    new clauses that happen to share that parsed ID.
+    """
+    available = [node for node in candidates if id(node) not in processed_old_ids]
+    if not available:
+        return None
+    if len(available) == 1 and not require_title_similarity:
+        return available[0]
+
+    new_title = _title_for_matching(new_node)
+    scored = [
+        (difflib.SequenceMatcher(None, _title_for_matching(node), new_title).ratio(), node)
+        for node in available
+    ]
+    score, best = max(scored, key=lambda item: item[0])
+    if require_title_similarity and score < 0.55:
+        return None
+    return best
+
+
+def _title_for_matching(node: dict) -> str:
+    """Normalize a heading and remove its repeated clause identifier."""
+    title = re.sub(r"\s+", " ", node.get("title", "")).strip().casefold()
+    clause_id = re.sub(r"\s+", " ", node.get("id", "")).strip().casefold()
+    if clause_id and title.startswith(clause_id):
+        remainder = title[len(clause_id):].lstrip(" .:-")
+        if remainder:
+            return remainder
+    return title
 
 
 def _is_modified(old_node: dict, new_node: dict) -> bool:

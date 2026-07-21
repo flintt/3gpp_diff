@@ -31,7 +31,7 @@ logger = logging.getLogger("3gpp_diff")
 
 app = Flask(__name__, static_folder="static")
 
-DIFF_CACHE_SCHEMA = 2
+DIFF_CACHE_SCHEMA = 3
 
 # ThreadPoolExecutor for background downloads & precomputations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -63,7 +63,7 @@ class LRUCache:
             return key in self.cache
 
 _diff_cache = LRUCache(maxsize=20)
-_diff_cache_dir = Path("cache") / "diffs"
+_diff_cache_dir = Path("cache") / "diffs" / f"v{DIFF_CACHE_SCHEMA}"
 
 # Known spec titles (fallback when not parsed)
 SPEC_TITLES = {

@@ -664,10 +664,71 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
 }
 
 // ===================== WORD-LEVEL DIFF =====================
+const MAX_LCS_CELLS = 300_000;
+const MAX_MYERS_EDIT_DISTANCE = 512;
+const tokenizeDiffText = text => text.match(/\w+|[^\w\s]|\s+/g) || [];
+const diffSegmenters = [
+  text => text.match(/[^\n]*\n|[^\n]+$/g) || [],
+  text => text.match(/.*?(?:[.!?](?:["')\]]+)?\s+|[;:]\s+|\n+)|.+$/gs) || [],
+  text => text.match(/.*?(?:[,;:]\s+|[.!?](?:["')\]]+)?\s+|\n+)|.+$/gs) || [],
+];
+
 function renderWordDiffHtml(oldText, newText) {
-  const tokenize = (text) => text.match(/\w+|[^\w\s]|\s+/g) || [];
-  const a = tokenize(oldText);
-  const b = tokenize(newText);
+  return _renderHierarchicalDiff(oldText, newText, 0);
+}
+
+function _renderHierarchicalDiff(oldText, newText, level) {
+  // Try an exact word diff first. On deeper levels, avoid retrying Myers on
+  // the same very large block until segmentation has made it smaller.
+  const allowMyers = level === 0 || oldText.length + newText.length < 12_000;
+  const exact = _renderExactTokenDiff(oldText, newText, allowMyers);
+  if (exact) return exact;
+
+  const segmenter = diffSegmenters[level];
+  if (!segmenter) return _renderCoarseDiff(oldText, newText);
+
+  const oldSegments = segmenter(oldText);
+  const newSegments = segmenter(newText);
+  if (oldSegments.length <= 1 && newSegments.length <= 1) {
+    return _renderHierarchicalDiff(oldText, newText, level + 1);
+  }
+
+  const ops = _sequenceDiff(oldSegments, newSegments);
+  if (!ops) return _renderHierarchicalDiff(oldText, newText, level + 1);
+
+  let leftHtml = '';
+  let rightHtml = '';
+  let oldChanged = [];
+  let newChanged = [];
+
+  const flushChangedBlock = () => {
+    if (oldChanged.length === 0 && newChanged.length === 0) return;
+    const nested = _renderHierarchicalDiff(oldChanged.join(''), newChanged.join(''), level + 1);
+    leftHtml += nested.leftHtml;
+    rightHtml += nested.rightHtml;
+    oldChanged = [];
+    newChanged = [];
+  };
+
+  for (const [op, oldStart, oldEnd, newStart, newEnd] of ops) {
+    if (op === 'equal') {
+      flushChangedBlock();
+      const equalHtml = escapeHtml(oldSegments.slice(oldStart, oldEnd).join(''));
+      leftHtml += equalHtml;
+      rightHtml += equalHtml;
+    } else if (op === 'delete') {
+      oldChanged.push(...oldSegments.slice(oldStart, oldEnd));
+    } else if (op === 'insert') {
+      newChanged.push(...newSegments.slice(newStart, newEnd));
+    }
+  }
+  flushChangedBlock();
+  return {leftHtml, rightHtml};
+}
+
+function _renderExactTokenDiff(oldText, newText, allowMyers) {
+  const a = tokenizeDiffText(oldText);
+  const b = tokenizeDiffText(newText);
   const n = a.length, m = b.length;
 
   if (n === 0 && m === 0) return { leftHtml: '', rightHtml: '' };
@@ -682,8 +743,13 @@ function renderWordDiffHtml(oldText, newText) {
   const aMid = a.slice(prefixLen, n - suffixLen);
   const bMid = b.slice(prefixLen, m - suffixLen);
 
-  // Run LCS-based diff on the middle section only
-  const ops = _lcsDiff(aMid, bMid);
+  let ops;
+  if (aMid.length * bMid.length <= MAX_LCS_CELLS) {
+    ops = _lcsDiff(aMid, bMid);
+  } else if (allowMyers) {
+    ops = _myersDiff(aMid, bMid, MAX_MYERS_EDIT_DISTANCE);
+  }
+  if (!ops) return null;
 
   // Build HTML: prefix + diffed middle + suffix
   let leftHtml = '', rightHtml = '';
@@ -712,23 +778,24 @@ function renderWordDiffHtml(oldText, newText) {
   return { leftHtml, rightHtml };
 }
 
-// Core LCS diff — used on the trimmed middle section.
-// Prefix/suffix trimming in renderWordDiffHtml already removes the bulk;
-// the middle section is typically small enough for direct DP.
+function _renderCoarseDiff(oldText, newText) {
+  return {
+    leftHtml: oldText ? `<span class="word-del word-diff-coarse">${escapeHtml(oldText)}</span>` : '',
+    rightHtml: newText ? `<span class="word-add word-diff-coarse">${escapeHtml(newText)}</span>` : '',
+  };
+}
+
+function _sequenceDiff(a, b) {
+  if (a.length * b.length <= MAX_LCS_CELLS) return _lcsDiff(a, b);
+  return _myersDiff(a, b, MAX_MYERS_EDIT_DISTANCE);
+}
+
+// Dynamic-programming LCS for small change regions.
 function _lcsDiff(a, b) {
   const n = a.length, m = b.length;
   if (n === 0 && m === 0) return [];
   if (n === 0) return [['insert', 0, 0, 0, m]];
   if (m === 0) return [['delete', 0, n, 0, 0]];
-
-  // Avoid quadratic stalls on clauses that were rewritten wholesale.
-  // Prefix/suffix trimming still preserves the unchanged context around them.
-  if (n * m > 300_000) {
-    return [
-      ['delete', 0, n, 0, 0],
-      ['insert', n, n, 0, m],
-    ];
-  }
 
   const dp = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
   for (let i = 1; i <= n; i++) {
@@ -757,7 +824,98 @@ function _lcsDiff(a, b) {
   }
   ops.reverse();
 
-  // Merge adjacent same-type ops
+  return _mergeDiffOps(ops);
+}
+
+// Myers finds sparse edits in long clauses without allocating an n*m matrix.
+// The edit-distance limit bounds worst-case work for genuine rewrites.
+function _myersDiff(a, b, editDistanceLimit) {
+  const n = a.length;
+  const m = b.length;
+  if (n === 0) return m === 0 ? [] : [['insert', 0, 0, 0, m]];
+  if (m === 0) return [['delete', 0, n, 0, 0]];
+
+  const maxDistance = Math.min(n + m, editDistanceLimit);
+  let frontier = new Map([[1, 0]]);
+  const trace = [];
+
+  for (let distance = 0; distance <= maxDistance; distance++) {
+    const next = new Map();
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const left = frontier.get(diagonal - 1) ?? -Infinity;
+      const right = frontier.get(diagonal + 1) ?? -Infinity;
+      let x;
+      if (diagonal === -distance || (diagonal !== distance && left < right)) {
+        x = Math.max(0, right);
+      } else {
+        x = left + 1;
+      }
+      let y = x - diagonal;
+      while (x < n && y < m && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+      next.set(diagonal, x);
+      if (x >= n && y >= m) {
+        trace.push(next);
+        return _backtrackMyers(trace, a, b);
+      }
+    }
+    trace.push(next);
+    frontier = next;
+  }
+  return null;
+}
+
+function _backtrackMyers(trace, a, b) {
+  let x = a.length;
+  let y = b.length;
+  const ops = [];
+
+  for (let distance = trace.length - 1; distance > 0; distance--) {
+    const previous = trace[distance - 1];
+    const diagonal = x - y;
+    const left = previous.get(diagonal - 1) ?? -Infinity;
+    const right = previous.get(diagonal + 1) ?? -Infinity;
+    const previousDiagonal = (
+      diagonal === -distance || (diagonal !== distance && left < right)
+    ) ? diagonal + 1 : diagonal - 1;
+    const previousX = previous.get(previousDiagonal) ?? 0;
+    const previousY = previousX - previousDiagonal;
+
+    while (x > previousX && y > previousY) {
+      ops.push(['equal', x - 1, x, y - 1, y]);
+      x--;
+      y--;
+    }
+    if (x === previousX) {
+      ops.push(['insert', previousX, previousX, previousY, previousY + 1]);
+    } else {
+      ops.push(['delete', previousX, previousX + 1, previousY, previousY]);
+    }
+    x = previousX;
+    y = previousY;
+  }
+
+  while (x > 0 && y > 0) {
+    ops.push(['equal', x - 1, x, y - 1, y]);
+    x--;
+    y--;
+  }
+  while (x > 0) {
+    ops.push(['delete', x - 1, x, 0, 0]);
+    x--;
+  }
+  while (y > 0) {
+    ops.push(['insert', 0, 0, y - 1, y]);
+    y--;
+  }
+
+  ops.reverse();
+  return _mergeDiffOps(ops);
+}
+
+function _mergeDiffOps(ops) {
   const merged = [];
   for (const op of ops) {
     if (merged.length > 0 && merged[merged.length - 1][0] === op[0]) {

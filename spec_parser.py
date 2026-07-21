@@ -326,7 +326,7 @@ def _extract_images_from_docx(docx_path, cache_dir, para_clause_map, body_elem):
                 clause_id = para_clause_map[elem_idx]
                 seen_targets = set()
 
-                for imagedata in elem.xpath('.//v:imagedata', namespaces=NS):
+                for imagedata in elem.iter('{urn:schemas-microsoft-com:vml}imagedata'):
                     rel_id = imagedata.get(f'{R_ATTR}id')
                     if rel_id and rel_id in rel_map:
                         target = rel_map[rel_id]
@@ -336,7 +336,7 @@ def _extract_images_from_docx(docx_path, cache_dir, para_clause_map, body_elem):
                             if info:
                                 clause_images.setdefault(clause_id, []).append(info)
 
-                for blip in elem.xpath('.//a:blip', namespaces=NS):
+                for blip in elem.iter('{http://schemas.openxmlformats.org/drawingml/2006/main}blip'):
                     embed = blip.get(f'{R_ATTR}embed')
                     if embed and embed in rel_map:
                         target = rel_map[embed]
