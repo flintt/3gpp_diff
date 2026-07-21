@@ -2,6 +2,7 @@
 3GPP Specification Diff Tool - Backend API Server
 """
 import json
+import gzip
 import os
 import time
 import threading
@@ -29,6 +30,8 @@ logging.basicConfig(
 logger = logging.getLogger("3gpp_diff")
 
 app = Flask(__name__, static_folder="static")
+
+DIFF_CACHE_SCHEMA = 2
 
 # ThreadPoolExecutor for background downloads & precomputations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -83,15 +86,23 @@ def _diff_cache_path(spec, v1, v2):
     return _diff_cache_dir / spec / f"{v1}_to_{v2}.json"
 
 
+def _diff_exists_on_disk(spec, v1, v2):
+    """Check cache coverage without parsing multi-megabyte JSON payloads."""
+    return _diff_cache_path(spec, v1, v2).is_file()
+
+
 def _load_diff_from_disk(spec, v1, v2):
     """Load diff result from disk cache if available."""
     cache_path = _diff_cache_path(spec, v1, v2)
     if cache_path.exists():
         try:
-            with open(cache_path, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if _normalize_diff_cache(data):
+                _save_diff_to_disk(spec, v1, v2, data)
+            return data
+        except Exception as exc:
+            logger.warning("Unable to read diff cache %s: %s", cache_path, exc)
     return None
 
 
@@ -99,12 +110,31 @@ def _save_diff_to_disk(spec, v1, v2, data):
     """Save diff result to disk cache."""
     cache_path = _diff_cache_path(spec, v1, v2)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    data["_cache_schema"] = DIFF_CACHE_SCHEMA
+    temp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
     try:
-        with open(cache_path, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp_path, cache_path)
+    except Exception as exc:
+        logger.warning("Unable to write diff cache %s: %s", cache_path, exc)
+        temp_path.unlink(missing_ok=True)
     _evict_disk_cache(spec)
+
+
+def _normalize_diff_cache(data: dict) -> bool:
+    """Migrate legacy cache payloads without recomputing their diffs."""
+    changed = data.get("_cache_schema") != DIFF_CACHE_SCHEMA
+    stack = list(data.get("clauses", []))
+    while stack:
+        node = stack.pop()
+        for legacy_key in ("old_body_lines", "new_body_lines", "_sort_key"):
+            if legacy_key in node:
+                node.pop(legacy_key, None)
+                changed = True
+        stack.extend(node.get("children", []))
+    data["_cache_schema"] = DIFF_CACHE_SCHEMA
+    return changed
 
 
 def _evict_disk_cache(spec: str, max_per_spec: int = 30):
@@ -116,6 +146,29 @@ def _evict_disk_cache(spec: str, max_per_spec: int = 30):
     if len(files) > max_per_spec:
         for f in files[:len(files) - max_per_spec]:
             f.unlink(missing_ok=True)
+
+
+@app.after_request
+def compress_large_json(response):
+    """Compress large API payloads when supported by the browser."""
+    accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "").lower()
+    is_json = response.mimetype == "application/json"
+    if (
+        accepts_gzip
+        and is_json
+        and not response.is_streamed
+        and 200 <= response.status_code < 300
+        and "Content-Encoding" not in response.headers
+    ):
+        payload = response.get_data()
+        if len(payload) >= 1024:
+            compressed = gzip.compress(payload, compresslevel=5, mtime=0)
+            if len(compressed) < len(payload):
+                response.set_data(compressed)
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Content-Length"] = str(len(compressed))
+                response.headers["Vary"] = "Accept-Encoding"
+    return response
 
 
 @app.route("/")
@@ -448,7 +501,7 @@ def _precompute_diffs(spec="23.501", max_releases=6):
         already_done = 0
         for v1, v2 in pairs:
             cache_key = f"{spec}@{v1}→{v2}"
-            if cache_key in _diff_cache or _load_diff_from_disk(spec, v1, v2) is not None:
+            if cache_key in _diff_cache or _diff_exists_on_disk(spec, v1, v2):
                 already_done += 1
             else:
                 to_compute.append((v1, v2))
@@ -541,7 +594,7 @@ def api_diff_coverage():
             v2 = f"{releases[j]}.0.0"
             cache_key = f"{spec}@{v1}→{v2}"
             on_memory = cache_key in _diff_cache
-            on_disk = _load_diff_from_disk(spec, v1, v2) is not None
+            on_disk = _diff_exists_on_disk(spec, v1, v2)
             pairs.append({
                 "v1": v1, "v2": v2,
                 "cached": on_memory or on_disk,

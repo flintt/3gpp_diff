@@ -45,8 +45,6 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
                     "status": "modified",
                     "old_body": old_node.get("body", ""),
                     "new_body": new_node.get("body", ""),
-                    "old_body_lines": old_node.get("body", "").split("\n"),
-                    "new_body_lines": new_node.get("body", "").split("\n"),
                     "old_images": old_node.get("images", []),
                     "new_images": new_node.get("images", []),
                     "_sort_key": key,
@@ -92,6 +90,8 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
 
     # Sort by document order
     result.sort(key=lambda x: x.get("_sort_key", (9999,)))
+    for node in result:
+        node.pop("_sort_key", None)
     return result
 
 
@@ -145,7 +145,6 @@ def _mark_all_added(clauses: list) -> list:
             "status": "added",
             "body": n.get("body", ""),
             "images": n.get("images", []),
-            "_sort_key": _clause_sort_key(n["id"]),
             "children": _mark_all_added(n.get("children", [])),
         }
         for n in clauses
@@ -162,7 +161,6 @@ def _mark_all_deleted(clauses: list) -> list:
             "status": "deleted",
             "body": n.get("body", ""),
             "images": n.get("images", []),
-            "_sort_key": _clause_sort_key(n["id"]),
             "children": _mark_all_deleted(n.get("children", [])),
         }
         for n in clauses

@@ -44,6 +44,21 @@ function countClauses(clauses) {
   return n;
 }
 
+function getClauseDisplayParts(node) {
+  let id = (node.id || '').trim();
+  let title = (node.title || '').trim();
+  if (id === title) {
+    const annex = id.match(/^(Annex\s+[A-Z0-9]+(?:\s+\([^)]+\))?)\s*:\s*(.+)$/i);
+    if (annex) {
+      id = annex[1];
+      title = annex[2];
+    } else {
+      title = '';
+    }
+  }
+  return {id, title};
+}
+
 // ===================== API =====================
 function renderProgress(steps, currentStep) {
   let html = '<div class="diff-progress">';
@@ -56,52 +71,36 @@ function renderProgress(steps, currentStep) {
   return html;
 }
 
-function fetchDiffWithProgress(spec, v1, v2, refresh) {
-  return new Promise((resolve, reject) => {
-    const steps = [`Parsing ${v1}`, `Parsing ${v2}`, 'Computing diff'];
-    let stepIndex = 0;
-    const startTime = Date.now();
-    const MIN_DISPLAY_MS = 600;
-    $('content').innerHTML = renderProgress(steps, 0);
+let _diffAbortController = null;
 
-    const url = `/api/diff-stream?spec=${spec}&v1=${v1}&v2=${v2}` + (refresh ? '&refresh=1' : '');
-    const es = new EventSource(url);
-    let pendingDone = null;
+async function fetchDiffWithProgress(spec, v1, v2, refresh) {
+  const steps = ['Loading release data', 'Reading clause changes', 'Preparing workspace'];
+  const startTime = performance.now();
+  const minimumDisplayMs = 220;
+  $('content').innerHTML = renderProgress(steps, 0);
 
-    es.addEventListener('progress', (e) => {
-      if (stepIndex < steps.length - 1) {
-        stepIndex++;
-        $('content').innerHTML = renderProgress(steps, stepIndex);
-      }
-    });
+  _diffAbortController?.abort();
+  _diffAbortController = new AbortController();
+  const params = new URLSearchParams({spec, v1, v2});
+  if (refresh) params.set('refresh', '1');
 
-    es.addEventListener('done', (e) => {
-      es.close();
-      try {
-        pendingDone = JSON.parse(e.data);
-      } catch (err) {
-        reject(new Error('Invalid diff response'));
-        return;
-      }
-      const elapsed = Date.now() - startTime;
-      if (elapsed < MIN_DISPLAY_MS) {
-        setTimeout(() => resolve(pendingDone), MIN_DISPLAY_MS - elapsed);
-      } else {
-        resolve(pendingDone);
-      }
-    });
-
-    es.addEventListener('error', (e) => {
-      es.close();
-      const msg = e.data ? JSON.parse(e.data) : 'Stream error';
-      reject(new Error(msg));
-    });
-
-    es.onerror = () => {
-      es.close();
-      reject(new Error('Connection lost'));
-    };
+  const response = await fetch(`/api/diff?${params}`, {
+    signal: _diffAbortController.signal,
+    headers: {'Accept': 'application/json'},
   });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Comparison failed (${response.status})`);
+  }
+
+  $('content').innerHTML = renderProgress(steps, 1);
+  const result = await response.json();
+  if (result.error) throw new Error(result.error);
+  $('content').innerHTML = renderProgress(steps, 2);
+
+  const remaining = minimumDisplayMs - (performance.now() - startTime);
+  if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+  return result;
 }
 
 // ===================== LIGHTBOX =====================
@@ -185,9 +184,9 @@ function renderImageThumbnails(images, spec, version) {
   for (const img of images) {
     const src = `/api/image/${spec}/${version}/${img.src}`;
     const alt = img.alt || '';
-    html += `<div class="clause-image" onclick="event.stopPropagation();openLightbox('${src}','${escapeHtml(alt)}')">
+    html += `<button class="clause-image" type="button" data-image-src="${escapeHtml(src)}" data-image-alt="${escapeHtml(alt)}" aria-label="Open figure ${escapeHtml(alt)}">
       <img src="${src}" alt="${escapeHtml(alt)}" loading="lazy">
-    </div>`;
+    </button>`;
   }
   html += '</div>';
   return html;
@@ -261,12 +260,6 @@ async function loadVersions() {
 
     $('diffBtn').disabled = false;
 
-    // Trigger background precomputation for cached diffs (fire-and-forget)
-    fetch('/api/precompute', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({spec}),
-    }).catch(() => {});
   } catch (err) {
     $('v1Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
     $('v2Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
@@ -370,48 +363,44 @@ async function downloadSpec() {
 }
 
 // ===================== TOC RENDER =====================
-const _tocBodyIndex = new Map(); // element -> lowercase body text (for filtering)
+let _tocRecords = [];
 
 function renderToc(clauses) {
   const tree = $('tocTree');
   if (!clauses || clauses.length === 0) {
     tree.innerHTML = '<div class="toc-no-results">No clauses found</div>';
-    _tocBodyIndex.clear();
+    _tocRecords = [];
     return;
   }
 
   let html = '';
   const flat = flattenClauseTree(clauses);
+  flat.forEach((node, index) => { node._flatIndex = index; });
 
-  for (const node of flat) {
+  for (let index = 0; index < flat.length; index++) {
+    const node = flat[index];
+    const display = getClauseDisplayParts(node);
     const indent = node._depth;
     const status = node.status || 'unchanged';
     const statusDot = status !== 'unchanged'
       ? `<span class="status-dot ${status}"></span>`
       : '<span class="status-dot unchanged"></span>';
     const id = node.id || '';
-    const bodyText = ((node.body || '') + ' ' + (node.old_body || '') + ' ' + (node.new_body || '')).toLowerCase();
 
-    html += `<div class="toc-item" style="--indent:${indent}" data-id="${escapeHtml(id)}"
-      onclick="scrollToClause('${escapeHtml(id)}')">
+    html += `<button class="toc-item" type="button" style="--indent:${indent}" data-id="${escapeHtml(id)}" data-clause-index="${index}">
       ${statusDot}
-      <span class="toc-id">${escapeHtml(id)}</span>
-      <span class="toc-title">${escapeHtml(node.title || '')}</span>
-    </div>`;
+      <span class="toc-id">${escapeHtml(display.id)}</span>
+      <span class="toc-title">${escapeHtml(display.title)}</span>
+    </button>`;
   }
 
   tree.innerHTML = html;
-
-  // Build body text index after DOM is created
-  _tocBodyIndex.clear();
   const items = tree.querySelectorAll('.toc-item');
-  for (let i = 0; i < items.length; i++) {
-    const node = flat[i];
-    if (node) {
-      const bodyText = ((node.body || '') + ' ' + (node.old_body || '') + ' ' + (node.new_body || '')).toLowerCase();
-      _tocBodyIndex.set(items[i], bodyText);
-    }
-  }
+  _tocRecords = flat.map((node, index) => ({
+    element: items[index],
+    node,
+    heading: `${node.id || ''} ${node.title || ''}`.toLowerCase(),
+  }));
 
   return flat;
 }
@@ -420,24 +409,116 @@ window.filterToc = function() {
   const input = $('tocSearchInput');
   const raw = input.value.trim().toLowerCase();
   const keywords = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
-  const items = document.querySelectorAll('.toc-item');
 
   if (keywords.length === 0) {
-    items.forEach(el => el.style.display = '');
+    _tocRecords.forEach(record => { record.element.hidden = false; });
     return;
   }
 
-  items.forEach(el => {
-    const id = (el.dataset.id || '').toLowerCase();
-    const title = (el.querySelector('.toc-title')?.textContent || '').toLowerCase();
-    const body = _tocBodyIndex.get(el) || '';
-    const match = keywords.some(kw => id.includes(kw) || title.includes(kw) || body.includes(kw));
-    el.style.display = match ? '' : 'none';
+  _tocRecords.forEach(record => {
+    const bodyFields = [record.node.body, record.node.old_body, record.node.new_body];
+    const match = keywords.some(keyword =>
+      record.heading.includes(keyword) || bodyFields.some(body => body && body.toLowerCase().includes(keyword))
+    );
+    record.element.hidden = !match;
   });
 };
 
 // ===================== DIFF RENDER =====================
 let _showUnchanged = false;
+const CLAUSE_BATCH_SIZE = 36;
+let _allClauseNodes = [];
+let _renderNodes = [];
+let _renderPositionByFlatIndex = new Map();
+let _renderedClauseCount = 0;
+let _renderGeneration = 0;
+let _clauseObserver = null;
+let _wordDiffObserver = null;
+
+const scheduleIdle = window.requestIdleCallback
+  ? callback => window.requestIdleCallback(callback, {timeout: 350})
+  : callback => window.setTimeout(callback, 0);
+
+function queueWordDiff(element, node, generation) {
+  if (element.dataset.wordDiffState) return;
+  element.dataset.wordDiffState = 'queued';
+  scheduleIdle(() => {
+    if (generation !== _renderGeneration || !element.isConnected) return;
+    const cells = element.querySelectorAll('.diff-word-content');
+    if (cells.length < 2) return;
+    const {leftHtml, rightHtml} = renderWordDiffHtml(node.old_body || '', node.new_body || '');
+    cells[0].innerHTML = leftHtml || escapeHtml(node.old_body || '');
+    cells[1].innerHTML = rightHtml || escapeHtml(node.new_body || '');
+    element.dataset.wordDiffState = 'done';
+  });
+}
+
+function appendClauseBatch(minimumEnd = 0) {
+  const list = $('clauseList');
+  if (!list || _renderedClauseCount >= _renderNodes.length) return;
+
+  const start = _renderedClauseCount;
+  const end = Math.min(
+    _renderNodes.length,
+    Math.max(start + CLAUSE_BATCH_SIZE, minimumEnd),
+  );
+  const spec = state.diffData.spec;
+  const oldVersion = state.diffData.old_version;
+  const newVersion = state.diffData.new_version;
+  let html = '';
+  for (let index = start; index < end; index++) {
+    const node = _renderNodes[index];
+    html += clauseDiffHtml(node, spec, oldVersion, newVersion, true);
+  }
+  list.insertAdjacentHTML('beforeend', html);
+  _renderedClauseCount = end;
+
+  for (let index = start; index < end; index++) {
+    const node = _renderNodes[index];
+    if (node.status !== 'modified') continue;
+    const element = document.getElementById(`clause-${node._flatIndex}`);
+    if (element) _wordDiffObserver?.observe(element);
+  }
+
+  const sentinel = $('renderSentinel');
+  if (sentinel) {
+    const remaining = _renderNodes.length - end;
+    sentinel.hidden = remaining === 0;
+    sentinel.querySelector('span').textContent = remaining ? `${remaining} more clauses` : '';
+  }
+}
+
+function startClauseRendering(showUnchanged) {
+  _renderGeneration += 1;
+  const generation = _renderGeneration;
+  _clauseObserver?.disconnect();
+  _wordDiffObserver?.disconnect();
+
+  _renderNodes = showUnchanged
+    ? _allClauseNodes
+    : _allClauseNodes.filter(node => node.status !== 'unchanged');
+  _renderPositionByFlatIndex = new Map(
+    _renderNodes.map((node, position) => [node._flatIndex, position]),
+  );
+  _renderedClauseCount = 0;
+  $('clauseList').replaceChildren();
+
+  _wordDiffObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      _wordDiffObserver.unobserve(entry.target);
+      const flatIndex = Number(entry.target.dataset.clauseIndex);
+      const node = _allClauseNodes[flatIndex];
+      if (node) queueWordDiff(entry.target, node, generation);
+    }
+  }, {root: $('content'), rootMargin: '650px 0px'});
+
+  _clauseObserver = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) appendClauseBatch();
+  }, {root: $('content'), rootMargin: '1000px 0px'});
+  _clauseObserver.observe($('renderSentinel'));
+  appendClauseBatch();
+}
 
 function renderDiff(diffData) {
   _showUnchanged = false;
@@ -465,9 +546,8 @@ function renderDiff(diffData) {
   if (uncCb) {
     uncCb.addEventListener('change', () => {
       _showUnchanged = uncCb.checked;
-      document.querySelectorAll('.clause-diff.unchanged').forEach(el => {
-        el.style.display = _showUnchanged ? '' : 'none';
-      });
+      startClauseRendering(_showUnchanged);
+      $('content').scrollTo({top: 0});
     });
   }
 
@@ -476,10 +556,7 @@ function renderDiff(diffData) {
   $('tocSearch').hidden = false;
   $('tocSearchInput').value = '';
   document.querySelectorAll('.toc-children').forEach(e => e.classList.add('open'));
-  let html = '';
-
-  // Header
-  html += `<div class="diff-header">
+  const html = `<div class="diff-header">
     <h2>${escapeHtml(diffData.title || '')}</h2>
     <div class="subtitle">
       <a class="spec-link" href="https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=${diffData.spec.replace('.','')}" target="_blank">
@@ -488,57 +565,20 @@ function renderDiff(diffData) {
       &mdash; Comparing <strong>v${diffData.old_version}</strong> (Rel-${diffData.old_release})
       vs <strong>v${diffData.new_version}</strong> (Rel-${diffData.new_release})
     </div>
-  </div>`;
-
-  const spec = diffData.spec;
-  const oldVer = diffData.old_version;
-  const newVer = diffData.new_version;
-  for (const node of flat) {
-    html += clauseDiffHtml(node, spec, oldVer, newVer, true /* skipWordDiff */);
-  }
-
+  </div>
+  <div class="clause-list" id="clauseList"></div>
+  <div class="render-sentinel" id="renderSentinel" role="status"><i></i><span></span></div>`;
   container.innerHTML = html;
-
-  // Apply unchanged visibility
-  if (!_showUnchanged) {
-    document.querySelectorAll('.clause-diff.unchanged').forEach(el => {
-      el.style.display = 'none';
-    });
-  }
-
-  // Second pass: compute word-level diffs progressively (does not block render)
-  const modifiedNodes = flat.filter(n => n.status === 'modified');
-  let wordIdx = 0;
-  function processWordBatch() {
-    const end = Math.min(wordIdx + 5, modifiedNodes.length);
-    for (; wordIdx < end; wordIdx++) {
-      const node = modifiedNodes[wordIdx];
-      const el = document.getElementById('clause-' + (node.id || '').replace(/\./g, '-'));
-      if (!el) continue;
-      const cells = el.querySelectorAll('.diff-word-content');
-      if (cells.length < 2) continue;
-      const { leftHtml, rightHtml } = renderWordDiffHtml(node.old_body || '', node.new_body || '');
-      cells[0].innerHTML = leftHtml || escapeHtml(node.old_body || '');
-      cells[1].innerHTML = rightHtml || escapeHtml(node.new_body || '');
-    }
-    if (wordIdx < modifiedNodes.length) {
-      requestAnimationFrame(processWordBatch);
-    }
-  }
-  if (modifiedNodes.length > 0) {
-    requestAnimationFrame(processWordBatch);
-  }
-
-  // Update navigation state
-  _updateNavState();
+  _allClauseNodes = flat;
+  startClauseRendering(false);
+  _updateNavState(flat);
 }
 
 function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const status = node.status || 'unchanged';
   const id = node.id || '';
-  const title = node.title || '';
-  const clauseId = 'clause-' + id.replace(/\./g, '-');
-  const hidden = status === 'unchanged' && !_showUnchanged ? ' style="display:none"' : '';
+  const display = getClauseDisplayParts(node);
+  const clauseId = `clause-${node._flatIndex}`;
 
   let bodyHtml = '';
 
@@ -548,7 +588,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     const collapsed = body.length > 300 ? ' collapsed' : '';
     bodyHtml = imgs + `<div class="clause-body${collapsed}">${escapeHtml(body || '(no content)')}</div>`;
     if (body.length > 300) {
-      bodyHtml += `<button class="expand-btn" onclick="this.previousElementSibling.classList.toggle('collapsed');this.textContent=this.previousElementSibling.classList.contains('collapsed')?'Show more':'Show less';">Show more</button>`;
+      bodyHtml += '<button class="expand-btn" type="button" data-action="expand-clause">Show more</button>';
     }
   } else if (status === 'added') {
     const imgs = renderImageThumbnails(node.images, spec, newVersion);
@@ -613,14 +653,14 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     </div>`;
   }
 
-  return `<div class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}"${hidden}>
+  return `<article class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
     <div class="clause-diff-header">
-      <span class="clause-id">${escapeHtml(id)}</span>
-      <span>${escapeHtml(title)}</span>
+      <span class="clause-id">${escapeHtml(display.id)}</span>
+      <span class="clause-title">${escapeHtml(display.title)}</span>
       <span class="status-badge ${status}">${status}</span>
     </div>
     ${bodyHtml}
-  </div>`;
+  </article>`;
 }
 
 // ===================== WORD-LEVEL DIFF =====================
@@ -648,38 +688,26 @@ function renderWordDiffHtml(oldText, newText) {
   // Build HTML: prefix + diffed middle + suffix
   let leftHtml = '', rightHtml = '';
 
-  // Prefix (equal)
-  for (let k = 0; k < prefixLen; k++) {
-    const t = escapeHtml(a[k]);
-    leftHtml += t;
-    rightHtml += t;
-  }
+  const prefixHtml = escapeHtml(a.slice(0, prefixLen).join(''));
+  leftHtml += prefixHtml;
+  rightHtml += prefixHtml;
 
   // Middle (diffed)
   for (const [op, s1, e1, s2, e2] of ops) {
     if (op === 'equal') {
-      for (let k = s1; k < e1; k++) {
-        const t = escapeHtml(aMid[k]);
-        leftHtml += t;
-        rightHtml += t;
-      }
+      const equalHtml = escapeHtml(aMid.slice(s1, e1).join(''));
+      leftHtml += equalHtml;
+      rightHtml += equalHtml;
     } else if (op === 'delete') {
-      for (let k = s1; k < e1; k++) {
-        leftHtml += `<span class="word-del">${escapeHtml(aMid[k])}</span>`;
-      }
+      leftHtml += `<span class="word-del">${escapeHtml(aMid.slice(s1, e1).join(''))}</span>`;
     } else if (op === 'insert') {
-      for (let k = s2; k < e2; k++) {
-        rightHtml += `<span class="word-add">${escapeHtml(bMid[k])}</span>`;
-      }
+      rightHtml += `<span class="word-add">${escapeHtml(bMid.slice(s2, e2).join(''))}</span>`;
     }
   }
 
-  // Suffix (equal)
-  for (let k = n - suffixLen; k < n; k++) {
-    const t = escapeHtml(a[k]);
-    leftHtml += t;
-    rightHtml += t;
-  }
+  const suffixHtml = escapeHtml(a.slice(n - suffixLen).join(''));
+  leftHtml += suffixHtml;
+  rightHtml += suffixHtml;
 
   return { leftHtml, rightHtml };
 }
@@ -693,7 +721,16 @@ function _lcsDiff(a, b) {
   if (n === 0) return [['insert', 0, 0, 0, m]];
   if (m === 0) return [['delete', 0, n, 0, 0]];
 
-  const dp = Array.from({length: n + 1}, () => new Array(m + 1).fill(0));
+  // Avoid quadratic stalls on clauses that were rewritten wholesale.
+  // Prefix/suffix trimming still preserves the unchanged context around them.
+  if (n * m > 300_000) {
+    return [
+      ['delete', 0, n, 0, 0],
+      ['insert', n, n, 0, m],
+    ];
+  }
+
+  const dp = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
       if (a[i - 1] === b[j - 1]) {
@@ -735,45 +772,69 @@ function _lcsDiff(a, b) {
 }
 
 // ===================== SCROLL TO CLAUSE =====================
-window.scrollToClause = function(clauseId) {
-  const el = document.getElementById('clause-' + clauseId.replace(/\./g, '-'));
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    document.querySelectorAll('.toc-item').forEach(e => e.classList.remove('active'));
-    document.querySelector(`.toc-item[data-id="${CSS.escape(clauseId)}"]`)?.classList.add('active');
-    if (window.matchMedia('(max-width: 760px)').matches) setMobileToc(false);
+async function ensureClauseRendered(flatIndex) {
+  const node = _allClauseNodes[flatIndex];
+  if (!node) return null;
+
+  if (node.status === 'unchanged' && !_showUnchanged) {
+    _showUnchanged = true;
+    const checkbox = $('uncToggle');
+    if (checkbox) checkbox.checked = true;
+    startClauseRendering(true);
   }
+
+  const targetPosition = _renderPositionByFlatIndex.get(flatIndex);
+  if (targetPosition === undefined) return null;
+  while (_renderedClauseCount <= targetPosition) {
+    appendClauseBatch();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  }
+
+  return document.getElementById(`clause-${flatIndex}`);
+}
+
+window.scrollToClause = async function(clauseReference) {
+  let flatIndex;
+  if (typeof clauseReference === 'number' || /^\d+$/.test(String(clauseReference))) {
+    flatIndex = Number(clauseReference);
+  } else {
+    flatIndex = _allClauseNodes.findIndex(node => node.id === clauseReference);
+  }
+
+  const element = await ensureClauseRendered(flatIndex);
+  if (!element) return;
+  element.scrollIntoView({behavior: 'smooth', block: 'start'});
+  document.querySelectorAll('.toc-item.active').forEach(item => item.classList.remove('active'));
+  document.querySelector(`.toc-item[data-clause-index="${flatIndex}"]`)?.classList.add('active');
+  if (mobileTocQuery.matches) setMobileToc(false);
 };
 
 // ===================== CHANGED CLAUSE NAVIGATION =====================
-let _changedIds = [];
+let _changedIndexes = [];
 let _navIndex = -1;
 
-function _updateNavState() {
-  _changedIds = [];
-  document.querySelectorAll('.clause-diff.modified, .clause-diff.added, .clause-diff.deleted').forEach(el => {
-    const id = el.dataset.clauseId;
-    if (id) _changedIds.push(id);
-  });
+function _updateNavState(flat) {
+  _changedIndexes = flat
+    .filter(node => node.status !== 'unchanged')
+    .map(node => node._flatIndex);
   _navIndex = -1;
   const nav = $('clauseNav');
   const count = $('navCount');
-  if (_changedIds.length > 0) {
+  if (_changedIndexes.length > 0) {
     nav.classList.add('visible');
-    count.textContent = `0 / ${_changedIds.length}`;
+    count.textContent = `0 / ${_changedIndexes.length}`;
   } else {
     nav.classList.remove('visible');
   }
 }
 
 window.navChanged = function(dir) {
-  if (_changedIds.length === 0) return;
+  if (_changedIndexes.length === 0) return;
   _navIndex += dir;
-  if (_navIndex < 0) _navIndex = _changedIds.length - 1;
-  if (_navIndex >= _changedIds.length) _navIndex = 0;
-  const id = _changedIds[_navIndex];
-  window.scrollToClause(id);
-  $('navCount').textContent = `${_navIndex + 1} / ${_changedIds.length}`;
+  if (_navIndex < 0) _navIndex = _changedIndexes.length - 1;
+  if (_navIndex >= _changedIndexes.length) _navIndex = 0;
+  window.scrollToClause(_changedIndexes[_navIndex]);
+  $('navCount').textContent = `${_navIndex + 1} / ${_changedIndexes.length}`;
 };
 
 // ===================== URL DEEP LINKING =====================
@@ -797,14 +858,11 @@ async function _restoreFromURL() {
     return;
   }
 
-  // Wait for specs to load, then set selections
+  // Let the initial spec load also populate the matching versions.
+  state.currentSpec = spec;
   await loadSpecs();
   const sel = $('specSelect');
-  for (let i = 0; i < sel.options.length; i++) {
-    if (sel.options[i].value === spec) { sel.selectedIndex = i; break; }
-  }
-  state.currentSpec = spec;
-  await loadVersions();
+  if (sel.value !== spec) return;
 
   if (v1) $('v1Select').value = v1;
   if (v2) $('v2Select').value = v2;
@@ -889,6 +947,26 @@ window.closeLightbox = closeLightbox;
     });
   }
 }
+
+$('tocTree').addEventListener('click', event => {
+  const item = event.target.closest('.toc-item[data-clause-index]');
+  if (item) window.scrollToClause(Number(item.dataset.clauseIndex));
+});
+
+$('content').addEventListener('click', event => {
+  const imageButton = event.target.closest('[data-image-src]');
+  if (imageButton) {
+    openLightbox(imageButton.dataset.imageSrc, imageButton.dataset.imageAlt);
+    return;
+  }
+
+  const expandButton = event.target.closest('[data-action="expand-clause"]');
+  if (expandButton) {
+    const body = expandButton.previousElementSibling;
+    body.classList.toggle('collapsed');
+    expandButton.textContent = body.classList.contains('collapsed') ? 'Show more' : 'Show less';
+  }
+});
 
 $('specSelect').addEventListener('change', loadVersions);
 $('diffBtn').addEventListener('click', () => window.runDiff());

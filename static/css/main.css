@@ -414,6 +414,7 @@ svg {
   font-size: 11px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .stat-total {
@@ -575,12 +576,17 @@ svg {
   position: relative;
   display: flex;
   min-height: 34px;
+  width: 100%;
   align-items: center;
   gap: 8px;
   overflow: hidden;
   padding: 7px 13px 7px calc(14px + var(--indent, 0) * 12px);
+  border: 0;
   border-right: 2px solid transparent;
   color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease;
 }
@@ -980,6 +986,33 @@ svg {
   box-shadow: 0 7px 24px rgba(0, 0, 0, 0.12);
 }
 
+.clause-list {
+  min-height: 1px;
+}
+
+.render-sentinel {
+  display: flex;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--text-faint);
+  font: 600 9px var(--font-mono);
+}
+
+.render-sentinel i {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: renderSpin 700ms linear infinite;
+}
+
+@keyframes renderSpin {
+  to { transform: rotate(360deg); }
+}
+
 .clause-diff::before {
   position: absolute;
   inset: 0 auto 0 0;
@@ -1023,7 +1056,7 @@ svg {
   font: 650 11px var(--font-mono);
 }
 
-.clause-diff-header > span:nth-child(2) {
+.clause-diff-header .clause-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1815,7 +1848,7 @@ svg {
     flex-wrap: wrap;
   }
 
-  .clause-diff-header > span:nth-child(2) {
+  .clause-diff-header .clause-title {
     width: calc(100% - 72px);
     white-space: normal;
   }
