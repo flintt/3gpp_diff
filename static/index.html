@@ -3,85 +3,158 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>3GPP Spec Diff Tool</title>
+  <meta name="theme-color" content="#0b1220">
+  <title>3GPP Delta — Specification comparison</title>
   <link rel="stylesheet" href="static/css/main.css">
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to comparison</a>
 
-<div class="header">
-  <h1><span>⚙</span> 3GPP Spec Diff</h1>
-  <div class="selector-group" id="specGroup">
-    <label for="specSelect">Spec</label>
-    <select id="specSelect">
-      <option value="">Select spec...</option>
-    </select>
-    <input type="text" id="specInput" placeholder="New spec e.g. 23.501">
-    <button class="btn" id="downloadBtn">Download</button>
-    <span id="downloadProgress" style="display:none;color:var(--text-secondary);font-size:12px;margin-left:8px;"></span>
+<header class="app-header">
+  <div class="brand-panel">
+    <button class="icon-btn mobile-toc-btn" id="mobileTocBtn" type="button" aria-label="Open table of contents" aria-controls="toc" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32"><path d="M8 5h11l5 5v17H8z"/><path d="M19 5v6h5M12 16h8M12 21h5"/></svg>
+    </div>
+    <div class="brand-copy">
+      <span class="brand-kicker">Release intelligence</span>
+      <h1>3GPP <span>Delta</span></h1>
+    </div>
   </div>
-  <div class="selector-group">
-    <label for="v1Select">Old Version</label>
-    <select id="v1Select">
-      <option value="">Select version...</option>
-    </select>
-  </div>
-  <div class="selector-group">
-    <label for="v2Select">New Version</label>
-    <select id="v2Select">
-      <option value="">Select version...</option>
-    </select>
-  </div>
-  <button class="btn" id="diffBtn" disabled>Compare</button>
-  <button class="btn btn-secondary" id="refreshBtn" style="display:none" onclick="window.runDiff(true)">⟳ Refresh</button>
-</div>
 
-<div class="stats-bar" id="statsBar" style="display:none">
-  <span class="stat stat-total" id="statTotal"></span>
-  <span class="stat stat-added" id="statAdded"></span>
-  <span class="stat stat-deleted" id="statDeleted"></span>
-  <span class="stat stat-modified" id="statModified"></span>
-</div>
+  <div class="comparison-toolbar" aria-label="Specification comparison controls">
+    <div class="control-group spec-control">
+      <label for="specSelect">Specification</label>
+      <select id="specSelect">
+        <option value="">Select specification…</option>
+      </select>
+    </div>
 
-<div class="main">
-  <div class="toc" id="toc">
-    <div class="toc-toggle" id="tocToggle">Table of Contents <span>▶</span></div>
-    <div class="toc-search" id="tocSearch" style="display:none">
-      <input type="text" id="tocSearchInput" placeholder="Filter: comma-separated keywords">
+    <div class="version-pair">
+      <div class="control-group">
+        <label for="v1Select">Baseline</label>
+        <select id="v1Select">
+          <option value="">Older version…</option>
+        </select>
+      </div>
+      <span class="version-arrow" aria-hidden="true">→</span>
+      <div class="control-group">
+        <label for="v2Select">Revision</label>
+        <select id="v2Select">
+          <option value="">Newer version…</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="compare-actions">
+      <button class="btn btn-primary" id="diffBtn" type="button" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h11M15 3l4 4-4 4M16 17H5M9 13l-4 4 4 4"/></svg>
+        <span>Compare</span>
+      </button>
+      <button class="btn btn-secondary" id="refreshBtn" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66L20 8M20 3v5h-5"/></svg>
+        <span>Refresh</span>
+      </button>
+    </div>
+
+    <div class="toolbar-divider" aria-hidden="true"></div>
+
+    <div class="import-group">
+      <label for="specInput">Cache another spec</label>
+      <div class="import-row">
+        <input type="text" id="specInput" inputmode="decimal" autocomplete="off" placeholder="e.g. 38.300" aria-describedby="downloadProgress">
+        <button class="btn btn-tertiary" id="downloadBtn" type="button">Download</button>
+      </div>
+      <span class="download-progress" id="downloadProgress" role="status" aria-live="polite" hidden></span>
+    </div>
+  </div>
+</header>
+
+<section class="stats-bar" id="statsBar" aria-label="Comparison summary" hidden></section>
+
+<main class="main-shell">
+  <aside class="toc" id="toc" aria-label="Table of contents">
+    <div class="toc-heading">
+      <div>
+        <span class="section-kicker">Document map</span>
+        <h2>Table of contents</h2>
+      </div>
+      <button class="icon-btn toc-collapse-btn" id="tocToggle" type="button" aria-label="Collapse table of contents" aria-expanded="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+    </div>
+    <div class="toc-search" id="tocSearch" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input type="search" id="tocSearchInput" placeholder="Search clauses or content…" autocomplete="off">
+      <kbd>/</kbd>
     </div>
     <div class="toc-tree-container">
-      <div id="tocTree"></div>
+      <div id="tocTree">
+        <div class="toc-empty">
+          <span class="toc-empty-line"></span>
+          <span class="toc-empty-line short"></span>
+          <p>Run a comparison to browse clauses.</p>
+        </div>
+      </div>
     </div>
-  </div>
-  <div class="content" id="content">
-    <div class="welcome" id="welcome">
-      <h2>📄 3GPP Specification Diff</h2>
-      <p>Select a specification and two versions above, then click <strong>Compare</strong> to see the difference.</p>
-      <p style="font-size:12px;color:var(--text-secondary)">
-        Data sourced from <a href="https://www.3gpp.org" target="_blank" style="color:var(--accent);text-decoration:none;">3gpp.org</a>.<br>
-        Supports TS 23.501/502/503, 38.300/401, 33.501 for Rel-15 through Rel-19.
-      </p>
+    <div class="toc-legend">
+      <span><i class="legend-dot added"></i>Added</span>
+      <span><i class="legend-dot modified"></i>Modified</span>
+      <span><i class="legend-dot deleted"></i>Removed</span>
     </div>
-  </div>
-</div>
+  </aside>
+  <button class="toc-backdrop" id="tocBackdrop" type="button" aria-label="Close table of contents"></button>
 
-<div class="lightbox" id="lightbox" onclick="window.closeLightbox()">
-  <span class="lightbox-close" onclick="event.stopPropagation();window.closeLightbox()">&times;</span>
+  <section class="content" id="content" tabindex="-1">
+    <div class="welcome" id="welcome">
+      <div class="welcome-visual" aria-hidden="true">
+        <div class="document-card document-card-old">
+          <span class="document-label">REL-17</span>
+          <i></i><i></i><i></i><i></i>
+        </div>
+        <div class="delta-connector"><span>Δ</span></div>
+        <div class="document-card document-card-new">
+          <span class="document-label">REL-18</span>
+          <i></i><i></i><i></i><i></i>
+        </div>
+      </div>
+      <div class="welcome-copy">
+        <span class="eyebrow"><i></i> Standards change intelligence</span>
+        <h2>See what changed.<br><span>Keep the context.</span></h2>
+        <p>Compare complete 3GPP releases with clause-level navigation, precise word highlighting, and linked technical figures.</p>
+        <div class="welcome-steps" aria-label="Getting started">
+          <span><b>01</b> Choose a spec</span>
+          <i aria-hidden="true"></i>
+          <span><b>02</b> Select releases</span>
+          <i aria-hidden="true"></i>
+          <span><b>03</b> Compare</span>
+        </div>
+        <p class="source-note">Local-first workspace · Source documents from <a href="https://www.3gpp.org" target="_blank" rel="noreferrer">3GPP</a></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Figure preview">
+  <button class="lightbox-close" id="lightboxClose" type="button" aria-label="Close figure preview">×</button>
   <img class="lightbox-content" id="lightboxImg" alt="">
   <div class="lightbox-caption" id="lightboxCaption"></div>
-  <div class="lightbox-controls" onclick="event.stopPropagation()">
-    <button onclick="window.zoomLightbox(-1)" title="Zoom out (−)">−</button>
-    <button onclick="window.zoomLightbox(0)" title="Reset (0)" style="font-size:11px;font-weight:600;letter-spacing:0.5px">1:1</button>
-    <button onclick="window.zoomLightbox(1)" title="Zoom in (+)">+</button>
+  <div class="lightbox-controls">
+    <button type="button" data-lightbox-zoom="-1" title="Zoom out (−)" aria-label="Zoom out">−</button>
+    <button class="lightbox-reset" type="button" data-lightbox-zoom="0" title="Reset (0)">100%</button>
+    <button type="button" data-lightbox-zoom="1" title="Zoom in (+)" aria-label="Zoom in">+</button>
   </div>
 </div>
 
-<div class="toast-container" id="toastContainer"></div>
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
-<div class="clause-nav" id="clauseNav">
-  <button onclick="window.navChanged(-1)" title="Previous changed (Shift+N)">‹ Prev</button>
+<nav class="clause-nav" id="clauseNav" aria-label="Changed clause navigation">
+  <button id="navPrevious" type="button" title="Previous change (Shift+N)">← <span>Previous</span></button>
   <span class="nav-count" id="navCount"></span>
-  <button onclick="window.navChanged(1)" title="Next changed (N)">Next ›</button>
-</div>
+  <button id="navNext" type="button" title="Next change (N)"><span>Next</span> →</button>
+</nav>
 
 <script src="static/js/app.js" defer></script>
 </body>

@@ -127,6 +127,7 @@ function closeLightbox() {
   const lb = document.getElementById('lightbox');
   lb.classList.remove('open');
   document.body.style.overflow = '';
+  document.getElementById('lightboxImg').src = '';
 }
 
 window.zoomLightbox = function(dir) {
@@ -203,8 +204,9 @@ async function loadSpecs() {
     ).join('') || '<option value="">No specs downloaded</option>';
 
     if (specs.length > 0) {
-      state.currentSpec = specs[0].id;
-      $('specSelect').value = specs[0].id;
+      const preferredSpec = specs.find(spec => spec.id === state.currentSpec)?.id || specs[0].id;
+      state.currentSpec = preferredSpec;
+      $('specSelect').value = preferredSpec;
       await loadVersions();
     } else {
       $('v1Select').innerHTML = '<option value="">Download a spec first</option>';
@@ -281,7 +283,7 @@ async function downloadSpec() {
   const prog = $('downloadProgress');
   btn.disabled = true;
   btn.textContent = 'Starting...';
-  prog.style.display = '';
+  prog.hidden = false;
   prog.textContent = 'Starting...';
 
   const startTime = Date.now();
@@ -358,7 +360,7 @@ async function downloadSpec() {
       }
     } catch (_) {}
 
-    setTimeout(() => { prog.style.display = 'none'; }, 3000);
+    setTimeout(() => { prog.hidden = true; }, 3000);
   } catch (err) {
     prog.textContent = `[${elapsed()}] Error: ${err.message}`;
   } finally {
@@ -373,7 +375,7 @@ const _tocBodyIndex = new Map(); // element -> lowercase body text (for filterin
 function renderToc(clauses) {
   const tree = $('tocTree');
   if (!clauses || clauses.length === 0) {
-    tree.innerHTML = '<div class="toc-item" style="color:var(--text-secondary);padding:16px;">No clauses</div>';
+    tree.innerHTML = '<div class="toc-no-results">No clauses found</div>';
     _tocBodyIndex.clear();
     return;
   }
@@ -386,7 +388,7 @@ function renderToc(clauses) {
     const status = node.status || 'unchanged';
     const statusDot = status !== 'unchanged'
       ? `<span class="status-dot ${status}"></span>`
-      : '<span class="status-dot" style="background:transparent"></span>';
+      : '<span class="status-dot unchanged"></span>';
     const id = node.id || '';
     const bodyText = ((node.body || '') + ' ' + (node.old_body || '') + ' ' + (node.new_body || '')).toLowerCase();
 
@@ -446,7 +448,7 @@ function renderDiff(diffData) {
   const toggleId = 'uncToggle';
   let toggleHtml = '';
   if (stats.unchanged > 0) {
-    toggleHtml = `<label style="margin-left:auto;font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--text-secondary)">
+    toggleHtml = `<label class="unchanged-toggle">
       <input type="checkbox" id="${toggleId}" ${_showUnchanged ? 'checked' : ''}> Show ${stats.unchanged} unchanged
     </label>`;
   }
@@ -457,7 +459,7 @@ function renderDiff(diffData) {
     <span class="stat stat-modified" id="statModified">~${stats.modified} modified</span>
     ${toggleHtml}
   `;
-  $('statsBar').style.display = 'flex';
+  $('statsBar').hidden = false;
 
   const uncCb = $(toggleId);
   if (uncCb) {
@@ -471,8 +473,7 @@ function renderDiff(diffData) {
 
   // Render TOC (returns flattened list to avoid duplicate traversal)
   const flat = renderToc(diffData.clauses) || [];
-  $('tocToggle').innerHTML = 'Table of Contents <span>&#9660;</span>';
-  $('tocSearch').style.display = '';
+  $('tocSearch').hidden = false;
   $('tocSearchInput').value = '';
   document.querySelectorAll('.toc-children').forEach(e => e.classList.add('open'));
   let html = '';
@@ -740,6 +741,7 @@ window.scrollToClause = function(clauseId) {
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     document.querySelectorAll('.toc-item').forEach(e => e.classList.remove('active'));
     document.querySelector(`.toc-item[data-id="${CSS.escape(clauseId)}"]`)?.classList.add('active');
+    if (window.matchMedia('(max-width: 760px)').matches) setMobileToc(false);
   }
 };
 
@@ -790,7 +792,10 @@ async function _restoreFromURL() {
   const spec = params.get('spec');
   const v1 = params.get('v1');
   const v2 = params.get('v2');
-  if (!spec) return;
+  if (!spec) {
+    await loadSpecs();
+    return;
+  }
 
   // Wait for specs to load, then set selections
   await loadSpecs();
@@ -852,20 +857,20 @@ window.runDiff = async function(refresh) {
   }
 
   $('diffBtn').disabled = true;
-  $('diffBtn').textContent = 'Loading...';
-  $('refreshBtn').style.display = 'none';
+  $('refreshBtn').hidden = true;
+  $('diffBtn').querySelector('span').textContent = 'Loading…';
 
   try {
     const diff = await fetchDiffWithProgress(state.currentSpec, v1, v2, refresh);
     state.diffData = diff;
     renderDiff(diff);
-    $('refreshBtn').style.display = '';
+    $('refreshBtn').hidden = false;
     _updateURL(state.currentSpec, v1, v2);
   } catch (err) {
     $('content').innerHTML = `<div class="error-msg">Error: ${escapeHtml(err.message)}</div>`;
   } finally {
     $('diffBtn').disabled = false;
-    $('diffBtn').textContent = 'Compare';
+    $('diffBtn').querySelector('span').textContent = 'Compare';
   }
 };
 
@@ -887,25 +892,57 @@ window.closeLightbox = closeLightbox;
 
 $('specSelect').addEventListener('change', loadVersions);
 $('diffBtn').addEventListener('click', () => window.runDiff());
+$('refreshBtn').addEventListener('click', () => window.runDiff(true));
 $('downloadBtn').addEventListener('click', downloadSpec);
 $('specInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') downloadSpec();
 });
 
-// TOC toggle
+// TOC controls: collapsible rail on desktop, off-canvas drawer on mobile.
+const mobileTocQuery = window.matchMedia('(max-width: 760px)');
+
+function setMobileToc(open) {
+  document.body.classList.toggle('toc-open', open);
+  $('mobileTocBtn').setAttribute('aria-expanded', String(open));
+}
+
+$('mobileTocBtn').addEventListener('click', () => setMobileToc(true));
+$('tocBackdrop').addEventListener('click', () => setMobileToc(false));
 $('tocToggle').addEventListener('click', () => {
-  const tree = $('tocTree');
-  const search = $('tocSearch');
-  const isHidden = tree.style.display === 'none';
-  tree.style.display = isHidden ? 'block' : 'none';
-  search.style.display = isHidden ? '' : 'none';
-  $('tocToggle').innerHTML = isHidden ? 'Table of Contents <span>&#9660;</span>' : 'Table of Contents <span>&#9654;</span>';
+  if (mobileTocQuery.matches) {
+    setMobileToc(false);
+    return;
+  }
+  const collapsed = document.body.classList.toggle('toc-collapsed');
+  $('tocToggle').setAttribute('aria-expanded', String(!collapsed));
+  $('tocToggle').setAttribute('aria-label', collapsed ? 'Expand table of contents' : 'Collapse table of contents');
 });
+
+mobileTocQuery.addEventListener('change', event => {
+  setMobileToc(false);
+  if (event.matches) document.body.classList.remove('toc-collapsed');
+});
+
+// Lightbox controls
+$('lightboxClose').addEventListener('click', closeLightbox);
+$('lightbox').addEventListener('click', event => {
+  if (event.target === $('lightbox')) closeLightbox();
+});
+document.querySelector('.lightbox-controls').addEventListener('click', event => {
+  const button = event.target.closest('[data-lightbox-zoom]');
+  if (button) window.zoomLightbox(Number(button.dataset.lightboxZoom));
+});
+
+$('navPrevious').addEventListener('click', () => window.navChanged(-1));
+$('navNext').addEventListener('click', () => window.navChanged(1));
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
-  // Escape always works (closes lightbox)
-  if (e.key === 'Escape') { closeLightbox(); return; }
+  if (e.key === 'Escape') {
+    if ($('lightbox').classList.contains('open')) closeLightbox();
+    else setMobileToc(false);
+    return;
+  }
 
   // Don't capture shortcuts while typing in inputs
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
@@ -921,6 +958,13 @@ document.addEventListener('keydown', e => {
   // n = next changed clause, Shift+N = previous
   if (e.key === 'n' || e.key === 'N') {
     window.navChanged(e.shiftKey ? -1 : 1);
+    return;
+  }
+
+  if (e.key === '/') {
+    e.preventDefault();
+    if (mobileTocQuery.matches) setMobileToc(true);
+    $('tocSearchInput').focus();
     return;
   }
 
