@@ -581,6 +581,19 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const clauseId = `clause-${node._flatIndex}`;
 
   let bodyHtml = '';
+  let versionContextHtml = '';
+
+  if (status === 'modified') {
+    versionContextHtml = `<span class="clause-version-context" aria-label="Comparing version ${escapeHtml(oldVersion)} with ${escapeHtml(newVersion)}">
+      <span class="version-chip old">v${escapeHtml(oldVersion || 'Old')}</span>
+      <span class="version-arrow-small" aria-hidden="true">→</span>
+      <span class="version-chip new">v${escapeHtml(newVersion || 'New')}</span>
+    </span>`;
+  } else if (status === 'added') {
+    versionContextHtml = `<span class="clause-version-context"><span class="version-chip new">Added in v${escapeHtml(newVersion || 'New')}</span></span>`;
+  } else if (status === 'deleted') {
+    versionContextHtml = `<span class="clause-version-context"><span class="version-chip old">Removed after v${escapeHtml(oldVersion || 'Old')}</span></span>`;
+  }
 
   if (status === 'unchanged') {
     const imgs = renderImageThumbnails(node.images, spec, newVersion);
@@ -594,12 +607,10 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     const imgs = renderImageThumbnails(node.images, spec, newVersion);
     const body = node.body || '';
     bodyHtml = `<div class="diff-view">
-      <div class="diff-pane">
-        <div class="diff-pane-header old">(empty)</div>
+      <div class="diff-pane diff-pane-old" aria-label="Previous version">
         <div class="diff-empty">Clause did not exist in the old version</div>
       </div>
-      <div class="diff-pane">
-        <div class="diff-pane-header new">New</div>
+      <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
         ${imgs}
         <div class="diff-line add">
           <span class="diff-line-num"></span>
@@ -611,16 +622,14 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     const imgs = renderImageThumbnails(node.images, spec, oldVersion);
     const body = node.body || '';
     bodyHtml = `<div class="diff-view">
-      <div class="diff-pane">
-        <div class="diff-pane-header old">Removed</div>
+      <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
         ${imgs}
         <div class="diff-line del">
           <span class="diff-line-num"></span>
           <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
         </div>
       </div>
-      <div class="diff-pane">
-        <div class="diff-pane-header new">(empty)</div>
+      <div class="diff-pane diff-pane-new" aria-label="New version">
         <div class="diff-empty">Clause removed in the new version</div>
       </div>
     </div>`;
@@ -640,13 +649,11 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     }
 
     bodyHtml = `<div class="diff-view">
-      <div class="diff-pane">
-        <div class="diff-pane-header old">v${oldVersion || 'Old'}</div>
+      <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
         ${oldImgs}
         <div class="diff-line"><div class="diff-word-content">${wordLeft || escapeHtml(oldText) || '(no content)'}</div></div>
       </div>
-      <div class="diff-pane">
-        <div class="diff-pane-header new">v${newVersion || 'New'}</div>
+      <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
         ${newImgs}
         <div class="diff-line"><div class="diff-word-content">${wordRight || escapeHtml(newText) || '(no content)'}</div></div>
       </div>
@@ -657,6 +664,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     <div class="clause-diff-header">
       <span class="clause-id">${escapeHtml(display.id)}</span>
       <span class="clause-title">${escapeHtml(display.title)}</span>
+      ${versionContextHtml}
       <span class="status-badge ${status}">${status}</span>
     </div>
     ${bodyHtml}

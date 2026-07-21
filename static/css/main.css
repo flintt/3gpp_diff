@@ -1058,13 +1058,49 @@ svg {
 
 .clause-diff-header .clause-title {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.status-badge {
+.clause-version-context {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
   margin-left: auto;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.version-chip {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.version-chip.old {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.version-chip.new {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.version-arrow-small {
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.status-badge {
+  flex: 0 0 auto;
+  margin-left: 0;
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 3px 7px;
@@ -1107,28 +1143,6 @@ svg {
 
 .diff-pane + .diff-pane {
   border-left: 1px solid var(--line);
-}
-
-.diff-pane-header {
-  position: relative;
-  z-index: 1;
-  padding: 7px 14px;
-  border-bottom: 1px solid var(--line);
-  color: var(--text-faint);
-  background: #0d1726;
-  font: 700 9px var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.diff-pane-header.old {
-  border-bottom-color: rgba(255, 116, 132, 0.28);
-  color: var(--red);
-}
-
-.diff-pane-header.new {
-  border-bottom-color: rgba(71, 215, 161, 0.28);
-  color: var(--green);
 }
 
 .diff-line {
@@ -1848,11 +1862,17 @@ svg {
   }
 
   .clause-diff-header .clause-title {
-    width: calc(100% - 72px);
+    flex: 1 1 calc(100% - 90px);
     white-space: normal;
   }
 
+  .clause-version-context {
+    order: 3;
+    margin-left: 0;
+  }
+
   .status-badge {
+    order: 4;
     margin-left: 0;
   }
 
