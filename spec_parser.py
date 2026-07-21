@@ -95,12 +95,12 @@ def _parse_docx(docx_path: Path, spec_number: str = None, version: str = None) -
 
     metadata = _extract_metadata(doc, spec_number, version, _para_data=para_data)
 
-    clauses, para_clause_map = _build_clause_tree(doc, _para_data=para_data)
+    clauses, para_clause_map, body_elem = _build_clause_tree(doc, _para_data=para_data)
 
     # Extract images and merge into clause tree
     if para_clause_map:
         cache_dir = Path("cache") / "images" / (metadata.get("spec_number", "_")) / (metadata.get("version", "_"))
-        clause_images = _extract_images_from_docx(docx_path, cache_dir, para_clause_map)
+        clause_images = _extract_images_from_docx(docx_path, cache_dir, para_clause_map, body_elem)
         if clause_images:
             _merge_images(clauses, clause_images)
 
@@ -229,7 +229,7 @@ def _build_clause_tree(doc, _para_data: list = None) -> tuple:
             elem_idx += 1
     
     root = _build_tree(entries)
-    return root, para_clause_map
+    return root, para_clause_map, body
 
 
 def _table_to_text(table_elem, nsmap) -> str:
@@ -280,9 +280,13 @@ def _heading_level(style_name: str) -> int:
     return 1
 
 
-def _extract_images_from_docx(docx_path, cache_dir, para_clause_map):
+def _extract_images_from_docx(docx_path, cache_dir, para_clause_map, body_elem):
     """Extract images from .docx and associate with clauses by element index.
-    
+
+    Args:
+        body_elem: Pre-parsed lxml body element from _build_clause_tree.
+        para_clause_map: Mapping from element index to clause_id.
+
     Returns dict mapping clause_id -> list of image info dicts.
     """
     import zipfile
@@ -312,12 +316,8 @@ def _extract_images_from_docx(docx_path, cache_dir, para_clause_map):
             if not rel_map:
                 return clause_images
 
-            doc_xml = etree.parse(z.open('word/document.xml'))
-            body = doc_xml.xpath('/w:document/w:body', namespaces=NS)
-            if not body:
-                return clause_images
-            body = body[0]
-            elements = list(body)
+            # Reuse the already-parsed body element instead of re-parsing document.xml
+            elements = list(body_elem)
 
             for elem_idx, elem in enumerate(elements):
                 if elem_idx not in para_clause_map:

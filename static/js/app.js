@@ -8,11 +8,21 @@ const state = {
 
 // ===================== UTILITIES =====================
 const $ = id => document.getElementById(id);
-const escapeHtml = str => {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-};
+const _escDiv = document.createElement('div');
+const escapeHtml = str => { _escDiv.textContent = str; return _escDiv.innerHTML; };
+
+// ===================== TOAST NOTIFICATIONS =====================
+function showToast(msg, type = 'info') {
+  const container = $('toastContainer');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('toast-out');
+    setTimeout(() => el.remove(), 300);
+  }, 3000);
+}
 
 function flattenClauseTree(clauses, depth = 0) {
   let result = [];
@@ -95,22 +105,77 @@ function fetchDiffWithProgress(spec, v1, v2, refresh) {
 }
 
 // ===================== LIGHTBOX =====================
+let _lbZoom = 1;
+let _lbPan = { x: 0, y: 0, dragging: false, startX: 0, startY: 0 };
+
 function openLightbox(src, alt) {
   const lb = document.getElementById('lightbox');
   const img = document.getElementById('lightboxImg');
+  const caption = document.getElementById('lightboxCaption');
   img.src = src;
   img.alt = alt || '';
+  caption.textContent = alt || '';
   lb.classList.add('open');
   document.body.style.overflow = 'hidden';
+  _lbZoom = 1;
+  _lbPan = { x: 0, y: 0, dragging: false, startX: 0, startY: 0 };
+  img.classList.remove('zoomed');
+  img.style.transform = '';
 }
+
 function closeLightbox() {
   const lb = document.getElementById('lightbox');
   lb.classList.remove('open');
   document.body.style.overflow = '';
 }
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeLightbox();
+
+window.zoomLightbox = function(dir) {
+  const img = document.getElementById('lightboxImg');
+  if (dir === 0) {
+    _lbZoom = 1;
+    _lbPan.x = 0;
+    _lbPan.y = 0;
+  } else if (dir > 0) {
+    _lbZoom = Math.min(_lbZoom * 1.3, 8);
+  } else {
+    _lbZoom = Math.max(_lbZoom / 1.3, 0.5);
+  }
+  if (_lbZoom > 1) {
+    img.classList.add('zoomed');
+    img.style.transform = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+  } else {
+    img.classList.remove('zoomed');
+    img.style.transform = '';
+    _lbPan.x = 0;
+    _lbPan.y = 0;
+  }
+};
+
+// Pan support for zoomed lightbox image
+document.getElementById('lightboxImg').addEventListener('mousedown', e => {
+  if (_lbZoom > 1) {
+    e.preventDefault();
+    _lbPan.dragging = true;
+    _lbPan.startX = e.clientX - _lbPan.x;
+    _lbPan.startY = e.clientY - _lbPan.y;
+  }
 });
+document.addEventListener('mousemove', e => {
+  if (_lbPan.dragging) {
+    _lbPan.x = e.clientX - _lbPan.startX;
+    _lbPan.y = e.clientY - _lbPan.startY;
+    const img = document.getElementById('lightboxImg');
+    img.style.transform = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+  }
+});
+document.addEventListener('mouseup', () => { _lbPan.dragging = false; });
+
+// Wheel zoom in lightbox
+document.getElementById('lightbox').addEventListener('wheel', e => {
+  e.preventDefault();
+  window.zoomLightbox(e.deltaY < 0 ? 1 : -1);
+}, { passive: false });
+
 
 // ===================== IMAGE THUMBNAILS =====================
 function renderImageThumbnails(images, spec, version) {
@@ -193,6 +258,13 @@ async function loadVersions() {
     }
 
     $('diffBtn').disabled = false;
+
+    // Trigger background precomputation for cached diffs (fire-and-forget)
+    fetch('/api/precompute', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({spec}),
+    }).catch(() => {});
   } catch (err) {
     $('v1Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
     $('v2Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
@@ -203,7 +275,7 @@ async function loadVersions() {
 
 async function downloadSpec() {
   const spec = $('specInput').value.trim();
-  if (!spec) { alert('Please enter a spec number'); return; }
+  if (!spec) { showToast('Please enter a spec number', 'error'); return; }
 
   const btn = $('downloadBtn');
   const prog = $('downloadProgress');
@@ -229,9 +301,14 @@ async function downloadSpec() {
       prog.textContent = `[${elapsed()}] Already downloading...`;
     }
 
-    // Poll until complete
-    while (true) {
-      await new Promise(r => setTimeout(r, 1000));
+    // Poll until complete (with timeout + backoff)
+    let pollInterval = 1000;
+    let pollCount = 0;
+    const MAX_POLLS = 600;
+    while (pollCount < MAX_POLLS) {
+      await new Promise(r => setTimeout(r, pollInterval));
+      pollCount++;
+      if (pollCount > 30) pollInterval = Math.min(pollInterval * 1.5, 5000);
       const sr = await fetch(`/api/download-status?spec=${spec}`);
       const st = await sr.json();
            if (st.status === 'listing')      prog.textContent = `[${elapsed()}] Listing releases...`;
@@ -240,6 +317,7 @@ async function downloadSpec() {
       else if (st.status === 'error')        throw new Error(st.error || 'Download failed');
       /* else 'not_found' — keep polling */
     }
+    if (pollCount >= MAX_POLLS) throw new Error('Download timed out');
 
     await loadSpecs();
     const sel = $('specSelect');
@@ -257,8 +335,13 @@ async function downloadSpec() {
       const pd = await pr.json();
       if (pd.status === 'started' || pd.status === 'already_running') {
         prog.textContent = `[${elapsed()}] Computing diffs...`;
-        while (true) {
-          await new Promise(r => setTimeout(r, 1500));
+        let pcInterval = 1500;
+        let pcCount = 0;
+        const PC_MAX = 400;
+        while (pcCount < PC_MAX) {
+          await new Promise(r => setTimeout(r, pcInterval));
+          pcCount++;
+          if (pcCount > 20) pcInterval = Math.min(pcInterval * 1.5, 5000);
           const sr = await fetch(`/api/precompute-status?spec=${spec}`);
           const st = await sr.json();
           if (st.status === 'computing') {
@@ -271,6 +354,7 @@ async function downloadSpec() {
             break;
           }
         }
+        if (pcCount >= PC_MAX) prog.textContent = `[${elapsed()}] Diff compute timed out`;
       }
     } catch (_) {}
 
@@ -284,10 +368,13 @@ async function downloadSpec() {
 }
 
 // ===================== TOC RENDER =====================
+const _tocBodyIndex = new Map(); // element -> lowercase body text (for filtering)
+
 function renderToc(clauses) {
   const tree = $('tocTree');
   if (!clauses || clauses.length === 0) {
     tree.innerHTML = '<div class="toc-item" style="color:var(--text-secondary);padding:16px;">No clauses</div>';
+    _tocBodyIndex.clear();
     return;
   }
 
@@ -303,7 +390,7 @@ function renderToc(clauses) {
     const id = node.id || '';
     const bodyText = ((node.body || '') + ' ' + (node.old_body || '') + ' ' + (node.new_body || '')).toLowerCase();
 
-    html += `<div class="toc-item" style="--indent:${indent}" data-id="${escapeHtml(id)}" data-body="${escapeHtml(bodyText)}"
+    html += `<div class="toc-item" style="--indent:${indent}" data-id="${escapeHtml(id)}"
       onclick="scrollToClause('${escapeHtml(id)}')">
       ${statusDot}
       <span class="toc-id">${escapeHtml(id)}</span>
@@ -312,6 +399,19 @@ function renderToc(clauses) {
   }
 
   tree.innerHTML = html;
+
+  // Build body text index after DOM is created
+  _tocBodyIndex.clear();
+  const items = tree.querySelectorAll('.toc-item');
+  for (let i = 0; i < items.length; i++) {
+    const node = flat[i];
+    if (node) {
+      const bodyText = ((node.body || '') + ' ' + (node.old_body || '') + ' ' + (node.new_body || '')).toLowerCase();
+      _tocBodyIndex.set(items[i], bodyText);
+    }
+  }
+
+  return flat;
 }
 
 window.filterToc = function() {
@@ -328,7 +428,7 @@ window.filterToc = function() {
   items.forEach(el => {
     const id = (el.dataset.id || '').toLowerCase();
     const title = (el.querySelector('.toc-title')?.textContent || '').toLowerCase();
-    const body = el.dataset.body || '';
+    const body = _tocBodyIndex.get(el) || '';
     const match = keywords.some(kw => id.includes(kw) || title.includes(kw) || body.includes(kw));
     el.style.display = match ? '' : 'none';
   });
@@ -338,6 +438,7 @@ window.filterToc = function() {
 let _showUnchanged = false;
 
 function renderDiff(diffData) {
+  _showUnchanged = false;
   const container = $('content');
   const stats = diffData.stats;
 
@@ -368,15 +469,12 @@ function renderDiff(diffData) {
     });
   }
 
-  // Render TOC
-  renderToc(diffData.clauses);
+  // Render TOC (returns flattened list to avoid duplicate traversal)
+  const flat = renderToc(diffData.clauses) || [];
   $('tocToggle').innerHTML = 'Table of Contents <span>&#9660;</span>';
   $('tocSearch').style.display = '';
   $('tocSearchInput').value = '';
   document.querySelectorAll('.toc-children').forEach(e => e.classList.add('open'));
-
-  // First pass: render WITHOUT word-level diffs (fast)
-  const flat = flattenClauseTree(diffData.clauses);
   let html = '';
 
   // Header
@@ -429,6 +527,9 @@ function renderDiff(diffData) {
   if (modifiedNodes.length > 0) {
     requestAnimationFrame(processWordBatch);
   }
+
+  // Update navigation state
+  _updateNavState();
 }
 
 function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
@@ -528,6 +629,69 @@ function renderWordDiffHtml(oldText, newText) {
   const b = tokenize(newText);
   const n = a.length, m = b.length;
 
+  if (n === 0 && m === 0) return { leftHtml: '', rightHtml: '' };
+
+  // Trim common prefix and suffix to reduce problem size
+  let prefixLen = 0;
+  while (prefixLen < n && prefixLen < m && a[prefixLen] === b[prefixLen]) prefixLen++;
+  let suffixLen = 0;
+  while (suffixLen < n - prefixLen && suffixLen < m - prefixLen && a[n - 1 - suffixLen] === b[m - 1 - suffixLen]) suffixLen++;
+
+  // Slice to the changed middle section
+  const aMid = a.slice(prefixLen, n - suffixLen);
+  const bMid = b.slice(prefixLen, m - suffixLen);
+
+  // Run LCS-based diff on the middle section only
+  const ops = _lcsDiff(aMid, bMid);
+
+  // Build HTML: prefix + diffed middle + suffix
+  let leftHtml = '', rightHtml = '';
+
+  // Prefix (equal)
+  for (let k = 0; k < prefixLen; k++) {
+    const t = escapeHtml(a[k]);
+    leftHtml += t;
+    rightHtml += t;
+  }
+
+  // Middle (diffed)
+  for (const [op, s1, e1, s2, e2] of ops) {
+    if (op === 'equal') {
+      for (let k = s1; k < e1; k++) {
+        const t = escapeHtml(aMid[k]);
+        leftHtml += t;
+        rightHtml += t;
+      }
+    } else if (op === 'delete') {
+      for (let k = s1; k < e1; k++) {
+        leftHtml += `<span class="word-del">${escapeHtml(aMid[k])}</span>`;
+      }
+    } else if (op === 'insert') {
+      for (let k = s2; k < e2; k++) {
+        rightHtml += `<span class="word-add">${escapeHtml(bMid[k])}</span>`;
+      }
+    }
+  }
+
+  // Suffix (equal)
+  for (let k = n - suffixLen; k < n; k++) {
+    const t = escapeHtml(a[k]);
+    leftHtml += t;
+    rightHtml += t;
+  }
+
+  return { leftHtml, rightHtml };
+}
+
+// Core LCS diff — used on the trimmed middle section.
+// Prefix/suffix trimming in renderWordDiffHtml already removes the bulk;
+// the middle section is typically small enough for direct DP.
+function _lcsDiff(a, b) {
+  const n = a.length, m = b.length;
+  if (n === 0 && m === 0) return [];
+  if (n === 0) return [['insert', 0, 0, 0, m]];
+  if (m === 0) return [['delete', 0, n, 0, 0]];
+
   const dp = Array.from({length: n + 1}, () => new Array(m + 1).fill(0));
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
@@ -555,6 +719,7 @@ function renderWordDiffHtml(oldText, newText) {
   }
   ops.reverse();
 
+  // Merge adjacent same-type ops
   const merged = [];
   for (const op of ops) {
     if (merged.length > 0 && merged[merged.length - 1][0] === op[0]) {
@@ -565,27 +730,7 @@ function renderWordDiffHtml(oldText, newText) {
       merged.push([...op]);
     }
   }
-
-  let leftHtml = '', rightHtml = '';
-  for (const [op, oldStart, oldEnd, newStart, newEnd] of merged) {
-    if (op === 'equal') {
-      for (let k = oldStart; k < oldEnd; k++) {
-        const t = escapeHtml(a[k]);
-        leftHtml += t;
-        rightHtml += t;
-      }
-    } else if (op === 'delete') {
-      for (let k = oldStart; k < oldEnd; k++) {
-        leftHtml += `<span class="word-del">${escapeHtml(a[k])}</span>`;
-      }
-    } else if (op === 'insert') {
-      for (let k = newStart; k < newEnd; k++) {
-        rightHtml += `<span class="word-add">${escapeHtml(b[k])}</span>`;
-      }
-    }
-  }
-
-  return { leftHtml, rightHtml };
+  return merged;
 }
 
 // ===================== SCROLL TO CLAUSE =====================
@@ -598,18 +743,100 @@ window.scrollToClause = function(clauseId) {
   }
 };
 
+// ===================== CHANGED CLAUSE NAVIGATION =====================
+let _changedIds = [];
+let _navIndex = -1;
+
+function _updateNavState() {
+  _changedIds = [];
+  document.querySelectorAll('.clause-diff.modified, .clause-diff.added, .clause-diff.deleted').forEach(el => {
+    const id = el.dataset.clauseId;
+    if (id) _changedIds.push(id);
+  });
+  _navIndex = -1;
+  const nav = $('clauseNav');
+  const count = $('navCount');
+  if (_changedIds.length > 0) {
+    nav.classList.add('visible');
+    count.textContent = `0 / ${_changedIds.length}`;
+  } else {
+    nav.classList.remove('visible');
+  }
+}
+
+window.navChanged = function(dir) {
+  if (_changedIds.length === 0) return;
+  _navIndex += dir;
+  if (_navIndex < 0) _navIndex = _changedIds.length - 1;
+  if (_navIndex >= _changedIds.length) _navIndex = 0;
+  const id = _changedIds[_navIndex];
+  window.scrollToClause(id);
+  $('navCount').textContent = `${_navIndex + 1} / ${_changedIds.length}`;
+};
+
+// ===================== URL DEEP LINKING =====================
+function _updateURL(spec, v1, v2) {
+  const params = new URLSearchParams();
+  if (spec) params.set('spec', spec);
+  if (v1) params.set('v1', v1);
+  if (v2) params.set('v2', v2);
+  const qs = params.toString();
+  const url = qs ? `${location.pathname}?${qs}` : location.pathname;
+  history.pushState(null, '', url);
+}
+
+async function _restoreFromURL() {
+  const params = new URLSearchParams(location.search);
+  const spec = params.get('spec');
+  const v1 = params.get('v1');
+  const v2 = params.get('v2');
+  if (!spec) return;
+
+  // Wait for specs to load, then set selections
+  await loadSpecs();
+  const sel = $('specSelect');
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === spec) { sel.selectedIndex = i; break; }
+  }
+  state.currentSpec = spec;
+  await loadVersions();
+
+  if (v1) $('v1Select').value = v1;
+  if (v2) $('v2Select').value = v2;
+
+  if (v1 && v2 && v1 !== v2) {
+    window.runDiff();
+  }
+}
+
+window.addEventListener('popstate', () => {
+  const params = new URLSearchParams(location.search);
+  const spec = params.get('spec');
+  const v1 = params.get('v1');
+  const v2 = params.get('v2');
+  if (spec && v1 && v2) {
+    $('specSelect').value = spec;
+    state.currentSpec = spec;
+    loadVersions().then(() => {
+      $('v1Select').value = v1;
+      $('v2Select').value = v2;
+      window.runDiff();
+    });
+  }
+});
+
 // ===================== MAIN FLOW =====================
 window.runDiff = async function(refresh) {
   const v1 = $('v1Select').value;
   const v2 = $('v2Select').value;
 
   if (!v1 || !v2) {
-    alert('Please select both versions');
+    showToast('Please select both versions', 'error');
     return;
   }
 
   if (v1 === v2) {
-    alert('Please select two different versions');
+    showToast('Please select two different versions', 'error');
     return;
   }
 
@@ -618,7 +845,7 @@ window.runDiff = async function(refresh) {
   for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
     const a = p1[i] || 0, b = p2[i] || 0;
     if (a > b) {
-      alert('Old version must be earlier than new version');
+      showToast('Old version must be earlier than new version', 'error');
       return;
     }
     if (a < b) break;
@@ -633,6 +860,7 @@ window.runDiff = async function(refresh) {
     state.diffData = diff;
     renderDiff(diff);
     $('refreshBtn').style.display = '';
+    _updateURL(state.currentSpec, v1, v2);
   } catch (err) {
     $('content').innerHTML = `<div class="error-msg">Error: ${escapeHtml(err.message)}</div>`;
   } finally {
@@ -645,6 +873,18 @@ window.openLightbox = openLightbox;
 window.closeLightbox = closeLightbox;
 
 // ===================== EVENT BINDING =====================
+// Debounce TOC search input
+{
+  let _filterTimer = null;
+  const searchInput = $('tocSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      clearTimeout(_filterTimer);
+      _filterTimer = setTimeout(window.filterToc, 200);
+    });
+  }
+}
+
 $('specSelect').addEventListener('change', loadVersions);
 $('diffBtn').addEventListener('click', () => window.runDiff());
 $('downloadBtn').addEventListener('click', downloadSpec);
@@ -662,14 +902,32 @@ $('tocToggle').addEventListener('click', () => {
   $('tocToggle').innerHTML = isHidden ? 'Table of Contents <span>&#9660;</span>' : 'Table of Contents <span>&#9654;</span>';
 });
 
-// Keyboard shortcut
+// Keyboard shortcuts
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
-    if (e.target === $('diffBtn') || e.target.id === 'v1Select' || e.target.id === 'v2Select') {
-      window.runDiff();
-    }
+  // Escape always works (closes lightbox)
+  if (e.key === 'Escape') { closeLightbox(); return; }
+
+  // Don't capture shortcuts while typing in inputs
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+  // Lightbox-open shortcuts (zoom +/- 0)
+  if (document.getElementById('lightbox').classList.contains('open')) {
+    if (e.key === '+' || e.key === '=') window.zoomLightbox(1);
+    else if (e.key === '-') window.zoomLightbox(-1);
+    else if (e.key === '0') window.zoomLightbox(0);
+    return; // don't process other shortcuts while lightbox open
+  }
+
+  // n = next changed clause, Shift+N = previous
+  if (e.key === 'n' || e.key === 'N') {
+    window.navChanged(e.shiftKey ? -1 : 1);
+    return;
+  }
+
+  if (e.key === 'Enter' && e.target.tagName === 'BUTTON') {
+    if (e.target === $('diffBtn')) window.runDiff();
   }
 });
 
 // ===================== INIT =====================
-loadSpecs();
+_restoreFromURL().catch(() => loadSpecs());

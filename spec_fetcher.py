@@ -230,7 +230,7 @@ def extract_doc_path(spec: str, version: str) -> Path:
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if already extracted
-    existing = list(extract_dir.glob("*.doc*"))
+    existing = [f for f in extract_dir.iterdir() if f.suffix in ('.doc', '.docx')]
     if existing:
         return existing[0]
 
@@ -238,7 +238,7 @@ def extract_doc_path(spec: str, version: str) -> Path:
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
 
-    extracted = list(extract_dir.glob("*.doc*"))
+    extracted = [f for f in extract_dir.iterdir() if f.suffix in ('.doc', '.docx')]
     if not extracted:
         raise FileNotFoundError(f"No .doc/.docx in {zip_path}")
     return extracted[0]

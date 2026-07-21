@@ -3,6 +3,7 @@
 """
 import json
 import os
+import time
 import threading
 import logging
 from pathlib import Path
@@ -13,7 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory, abort, Response
 
 from spec_fetcher import list_versions, extract_doc_path, list_cached_versions, download_spec, CACHE_DIR
 from spec_parser import parse_spec, clause_count
-from diff_engine import diff_trees, compute_diff_stats, compute_line_diff
+from diff_engine import diff_trees, compute_diff_stats
 
 # Setup logging
 Path("cache").mkdir(exist_ok=True)
@@ -58,7 +59,7 @@ class LRUCache:
         with self.lock:
             return key in self.cache
 
-_diff_cache = LRUCache(maxsize=10)
+_diff_cache = LRUCache(maxsize=20)
 _diff_cache_dir = Path("cache") / "diffs"
 
 # Known spec titles (fallback when not parsed)
@@ -103,6 +104,18 @@ def _save_diff_to_disk(spec, v1, v2, data):
             json.dump(data, f)
     except Exception:
         pass
+    _evict_disk_cache(spec)
+
+
+def _evict_disk_cache(spec: str, max_per_spec: int = 30):
+    """Remove oldest cached diffs for a spec if over limit."""
+    spec_dir = _diff_cache_dir / spec
+    if not spec_dir.exists():
+        return
+    files = sorted(spec_dir.glob("*.json"), key=lambda f: f.stat().st_mtime)
+    if len(files) > max_per_spec:
+        for f in files[:len(files) - max_per_spec]:
+            f.unlink(missing_ok=True)
 
 
 @app.route("/")
@@ -335,38 +348,6 @@ def api_image(spec, version, filename):
     return send_from_directory(image_path.parent, image_path.name, mimetype=mimetype)
 
 
-@app.route("/api/line-diff")
-def api_line_diff():
-    """Compute line-level diff for a specific clause."""
-    spec = request.args.get("spec", "23.501")
-    v1 = request.args.get("v1", "")
-    v2 = request.args.get("v2", "")
-    clause_id = request.args.get("clause", "")
-
-    try:
-        old_doc = _get_parsed(spec, v1)
-        new_doc = _get_parsed(spec, v2)
-
-        old_text = _find_clause_text(old_doc["clauses"], clause_id)
-        new_text = _find_clause_text(new_doc["clauses"], clause_id)
-
-        lines = compute_line_diff(old_text or "", new_text or "")
-        return jsonify({"clause": clause_id, "lines": lines})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-def _find_clause_text(clauses: list, clause_id: str) -> str:
-    """Find body text for a specific clause ID."""
-    for node in clauses:
-        if node["id"] == clause_id:
-            return node.get("body", "")
-        child_result = _find_clause_text(node.get("children", []), clause_id)
-        if child_result is not None:
-            return child_result
-    return None
-
-
 # ===================== Background Download =====================
 
 def _download_all_releases(spec: str):
@@ -509,8 +490,7 @@ def _precompute_diffs(spec="23.501", max_releases=6):
             except Exception as e:
                 logger.error(f"[precompute] ✗ {v1} → {v2}: {e}")
             # Yield GIL so Flask request threads can make progress
-            import time
-            time.sleep(0.1)
+            time.sleep(0.001)
         _precompute_status[spec]["status"] = "completed"
         logger.info(f"[precompute] {spec}: done ({_precompute_status[spec]['done']}/{len(pairs)} diffs)")
     except Exception as e:

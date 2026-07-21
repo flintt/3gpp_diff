@@ -485,7 +485,6 @@ body {
   color: var(--text-secondary);
   white-space: pre-wrap;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
   background: rgba(10, 14, 23, 0.3);
 }
 
@@ -750,11 +749,180 @@ body {
   font-size: 15px;
 }
 
-.welcome style-tip {
+.welcome p:last-child {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 10px;
   line-height: 1.6;
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  animation: toastIn 0.3s ease;
+  pointer-events: auto;
+  max-width: 360px;
+}
+
+.toast.toast-error { border-color: rgba(239, 68, 68, 0.4); color: #f87171; }
+.toast.toast-success { border-color: rgba(16, 185, 129, 0.4); color: #34d399; }
+.toast.toast-out { animation: toastOut 0.3s ease forwards; }
+
+@keyframes toastIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes toastOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+
+/* Changed clause navigation */
+.clause-nav {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  background: rgba(17, 24, 39, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 28px;
+  padding: 4px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.clause-nav.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.clause-nav button {
+  background: transparent;
+  border: none;
+  border-radius: 24px;
+  color: var(--text-secondary);
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.clause-nav button:hover {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-hover);
+}
+
+.clause-nav button:active {
+  background: rgba(59, 130, 246, 0.25);
+  transform: scale(0.97);
+}
+
+.clause-nav .nav-count {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  justify-content: center;
+  opacity: 0.7;
+}
+
+/* Lightbox caption */
+.lightbox-caption {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  text-align: center;
+  max-width: 80%;
+  pointer-events: none;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+}
+
+/* Lightbox zoom controls */
+.lightbox-controls {
+  position: absolute;
+  bottom: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  z-index: 1001;
+  background: rgba(10, 14, 23, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  padding: 3px;
+}
+
+.lightbox-controls button {
+  background: transparent;
+  border: none;
+  border-radius: 20px;
+  color: rgba(255, 255, 255, 0.6);
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  font-weight: 300;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  font-family: 'Outfit', sans-serif;
+}
+
+.lightbox-controls button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.lightbox-controls button:active {
+  background: rgba(255, 255, 255, 0.15);
+  transform: scale(0.92);
+}
+
+.lightbox-content.zoomed {
+  cursor: grab;
+  max-width: none;
+  max-height: none;
+}
+
+.lightbox-content.zoomed:active {
+  cursor: grabbing;
 }
 
 /* Responsive */

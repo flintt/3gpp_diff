@@ -46,7 +46,7 @@
   <div class="toc" id="toc">
     <div class="toc-toggle" id="tocToggle">Table of Contents <span>▶</span></div>
     <div class="toc-search" id="tocSearch" style="display:none">
-      <input type="text" id="tocSearchInput" placeholder="Filter: comma-separated keywords" oninput="window.filterToc()">
+      <input type="text" id="tocSearchInput" placeholder="Filter: comma-separated keywords">
     </div>
     <div class="toc-tree-container">
       <div id="tocTree"></div>
@@ -67,6 +67,20 @@
 <div class="lightbox" id="lightbox" onclick="window.closeLightbox()">
   <span class="lightbox-close" onclick="event.stopPropagation();window.closeLightbox()">&times;</span>
   <img class="lightbox-content" id="lightboxImg" alt="">
+  <div class="lightbox-caption" id="lightboxCaption"></div>
+  <div class="lightbox-controls" onclick="event.stopPropagation()">
+    <button onclick="window.zoomLightbox(-1)" title="Zoom out (−)">−</button>
+    <button onclick="window.zoomLightbox(0)" title="Reset (0)" style="font-size:11px;font-weight:600;letter-spacing:0.5px">1:1</button>
+    <button onclick="window.zoomLightbox(1)" title="Zoom in (+)">+</button>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<div class="clause-nav" id="clauseNav">
+  <button onclick="window.navChanged(-1)" title="Previous changed (Shift+N)">‹ Prev</button>
+  <span class="nav-count" id="navCount"></span>
+  <button onclick="window.navChanged(1)" title="Next changed (N)">Next ›</button>
 </div>
 
 <script src="static/js/app.js" defer></script>
