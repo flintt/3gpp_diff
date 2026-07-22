@@ -17,6 +17,10 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
       2. Unmatched old  -> deleted
       3. Unmatched new  -> added
 
+    Ordering follows the new document. Deleted clauses are inserted before
+    their next surviving old-document sibling so they remain near their
+    original position.
+
     This function only processes top-level nodes; recursion handles children.
     """
     old_by_id = _build_id_map(old_clauses)
@@ -24,11 +28,11 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
 
     result = []
     processed_old_ids = set()
+    matched_results = {}
 
     # Process new clauses in document order, matching against old
     for new_node in new_clauses:
         nid = new_node["id"]
-        key = _clause_sort_key(nid)
 
         candidates = old_by_id.get(nid, [])
         old_node = _select_old_node(
@@ -45,7 +49,7 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
                 new_node.get("children", []),
             )
             if _is_modified(old_node, new_node):
-                result.append({
+                result_node = {
                     "id": nid,
                     "title": new_node["title"],
                     "level": new_node["level"],
@@ -54,69 +58,62 @@ def diff_trees(old_clauses: list, new_clauses: list) -> list:
                     "new_body": new_node.get("body", ""),
                     "old_images": old_node.get("images", []),
                     "new_images": new_node.get("images", []),
-                    "_sort_key": key,
                     "children": children,
-                })
+                }
             else:
-                result.append({
+                result_node = {
                     "id": nid,
                     "title": new_node["title"],
                     "level": new_node["level"],
                     "status": "unchanged",
                     "body": new_node.get("body", ""),
                     "images": new_node.get("images", []),
-                    "_sort_key": key,
                     "children": children,
-                })
+                }
+            matched_results[id(old_node)] = result_node
         else:
             # New clause not in old -> added
-            result.append({
+            result_node = {
                 "id": nid,
                 "title": new_node["title"],
                 "level": new_node["level"],
                 "status": "added",
                 "body": new_node.get("body", ""),
                 "images": new_node.get("images", []),
-                "_sort_key": key,
                 "children": _mark_all_added(new_node.get("children", [])),
-            })
+            }
+        result.append(result_node)
 
-    # Old clauses that were never matched -> deleted
+    # Group deleted clauses by their next surviving old-document sibling.
+    # This preserves source order without sorting alphabetic annex IDs ahead
+    # of numbered clauses.
+    deleted_before = defaultdict(list)
+    pending_deleted = []
     for old_node in old_clauses:
         if id(old_node) not in processed_old_ids:
-            result.append({
+            pending_deleted.append({
                 "id": old_node["id"],
                 "title": old_node["title"],
                 "level": old_node["level"],
                 "status": "deleted",
                 "body": old_node.get("body", ""),
                 "images": old_node.get("images", []),
-                "_sort_key": _clause_sort_key(old_node["id"]),
                 "children": _mark_all_deleted(old_node.get("children", [])),
             })
+        elif pending_deleted:
+            anchor = matched_results[id(old_node)]
+            deleted_before[id(anchor)].extend(pending_deleted)
+            pending_deleted = []
 
-    # Sort by document order
-    result.sort(key=lambda x: x.get("_sort_key", (9999,)))
+    if not matched_results:
+        return pending_deleted + result
+
+    ordered_result = []
     for node in result:
-        node.pop("_sort_key", None)
-    return result
-
-
-def _clause_sort_key(clause_id: str):
-    """Generate sort key from '4.2.3' -> (4, 2, 3)."""
-    try:
-        parts = clause_id.split(".")
-        # Handle cases like '5. 35A.1' -> filter non-numeric
-        nums = []
-        for p in parts:
-            m = re.match(r"(\d+)", p)
-            if m:
-                nums.append(int(m.group(1)))
-            else:
-                nums.append(0)
-        return tuple(nums)
-    except (ValueError, AttributeError):
-        return (9999,)
+        ordered_result.extend(deleted_before.get(id(node), ()))
+        ordered_result.append(node)
+    ordered_result.extend(pending_deleted)
+    return ordered_result
 
 
 def _build_id_map(clauses: list) -> dict:

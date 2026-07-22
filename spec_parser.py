@@ -469,18 +469,28 @@ def _extract_clause_id(heading: str) -> str:
     """Extract clause number from heading text.
     '4.2.3\tNon-roaming reference architecture' -> '4.2.3'
     '4.2.3 Non-roaming reference architecture' -> '4.2.3'
+    'D.5 Support for overlay networks' -> 'D.5'
+    'Annex D (informative): deployment options' -> 'Annex D'
     Returns None if no clause number found.
     """
-    # Tab-separated
-    if "\t" in heading:
-        candidate = heading.split("\t")[0].strip()
-        if re.match(r"^\d+(\.\d+)*$", candidate):
-            return candidate
+    # Annex headings need a stable identifier even when their descriptive
+    # title changes between releases.
+    annex_match = re.match(r"^\s*Annex\s+([A-Za-z]+)\b", heading, re.IGNORECASE)
+    if annex_match:
+        return f"Annex {annex_match.group(1).upper()}"
 
-    # First word might be clause number
-    first_word = heading.split()[0] if heading.split() else ""
-    if re.match(r"^\d+(\.\d+)*$", first_word):
-        return first_word
+    # 3GPP sources sometimes insert spaces around dots ("5.2. 1" or
+    # "4 . 3"). Annex subclauses use an alphabetic first segment ("D.5").
+    # Accept optional letter suffixes as used by identifiers such as 5.35A.1.
+    clause_match = re.match(
+        r"^\s*("
+        r"(?:\d+[A-Za-z]*(?:\s*\.\s*\d+[A-Za-z]*)*)"
+        r"|(?:[A-Za-z]+(?:\s*\.\s*\d+[A-Za-z]*)+)"
+        r")(?=\s|$)",
+        heading,
+    )
+    if clause_match:
+        return re.sub(r"\s*\.\s*", ".", clause_match.group(1))
 
     return None
 

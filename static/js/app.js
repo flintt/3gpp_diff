@@ -62,14 +62,15 @@ function countClauses(clauses) {
 function getClauseDisplayParts(node) {
   let id = (node.id || '').trim();
   let title = (node.title || '').trim();
-  if (id === title) {
-    const annex = id.match(/^(Annex\s+[A-Z0-9]+(?:\s+\([^)]+\))?)\s*:\s*(.+)$/i);
-    if (annex) {
-      id = annex[1];
-      title = annex[2];
-    } else {
-      title = '';
-    }
+  const annex = title.match(/^(Annex\s+[A-Z0-9]+(?:\s+\([^)]+\))?)\s*:\s*(.+)$/i);
+  if (annex && annex[1].toLowerCase().startsWith(id.toLowerCase())) {
+    id = annex[1];
+    title = annex[2];
+  } else if (id === title) {
+    title = '';
+  } else if (id && title.toLowerCase().startsWith(id.toLowerCase())) {
+    const remainder = title.slice(id.length);
+    if (/^[\s.:\-–—]/.test(remainder)) title = remainder.replace(/^[\s.:\-–—]+/, '');
   }
   return {id, title};
 }

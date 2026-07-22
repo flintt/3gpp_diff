@@ -31,7 +31,7 @@ logger = logging.getLogger("3gpp_diff")
 
 app = Flask(__name__, static_folder="static")
 
-DIFF_CACHE_SCHEMA = 3
+DIFF_CACHE_SCHEMA = 5
 
 # ThreadPoolExecutor for background downloads & precomputations
 _executor = ThreadPoolExecutor(max_workers=4)

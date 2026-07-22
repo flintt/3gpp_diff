@@ -51,6 +51,47 @@ class DiffTreeMatchingTests(unittest.TestCase):
 
         self.assertEqual([node["status"] for node in result], ["deleted", "added"])
 
+    def test_preserves_document_order_for_annex_clauses(self):
+        old = [
+            clause("1", "1 Scope"),
+            clause("2", "2 References"),
+            clause("Annex D", "Annex D (informative): deployment options"),
+            clause("D.5", "D.5 Overlay network support"),
+        ]
+        new = [dict(node) for node in old]
+
+        result = diff_trees(old, new)
+
+        self.assertEqual(
+            [node["id"] for node in result],
+            ["1", "2", "Annex D", "D.5"],
+        )
+
+    def test_keeps_deleted_clause_near_its_original_position(self):
+        result = diff_trees(
+            [
+                clause("1", "1 Scope"),
+                clause("2", "2 Removed section"),
+                clause("3", "3 Definitions"),
+                clause("Annex A", "Annex A (informative): notes"),
+            ],
+            [
+                clause("1", "1 Scope"),
+                clause("3", "3 Definitions"),
+                clause("Annex A", "Annex A (informative): notes"),
+            ],
+        )
+
+        self.assertEqual(
+            [(node["id"], node["status"]) for node in result],
+            [
+                ("1", "unchanged"),
+                ("2", "deleted"),
+                ("3", "unchanged"),
+                ("Annex A", "unchanged"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
