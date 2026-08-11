@@ -566,6 +566,29 @@ html[data-theme="light"] .theme-icon-moon {
   transform: translateY(-50%);
 }
 
+.toc-search-summary {
+  padding: 0 1rem 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.toc-search-summary.searching::after {
+  content: '';
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: 0.4rem;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: tocSearchSpin 0.75s linear infinite;
+}
+
+@keyframes tocSearchSpin {
+  to { transform: rotate(360deg); }
+}
+
 .toc-tree-container {
   min-height: 0;
   flex: 1 1 auto;
@@ -592,6 +615,8 @@ html[data-theme="light"] .theme-icon-moon {
 .toc-item {
   position: relative;
   display: flex;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 34px;
   min-height: 34px;
   width: 100%;
   align-items: center;
@@ -619,11 +644,28 @@ html[data-theme="light"] .theme-icon-moon {
   background: linear-gradient(90deg, transparent, rgba(90, 140, 255, 0.1));
 }
 
-.toc-item .status-dot {
+.toc-item::before {
+  content: '';
   width: 5px;
   height: 5px;
   flex: 0 0 auto;
   border-radius: 50%;
+}
+
+.toc-item.status-added::before {
+  background: var(--green);
+}
+
+.toc-item.status-deleted::before {
+  background: var(--red);
+}
+
+.toc-item.status-modified::before {
+  background: var(--amber);
+}
+
+.toc-item.status-unchanged::before {
+  background: transparent;
 }
 
 .status-dot.added,
@@ -995,6 +1037,8 @@ html[data-theme="light"] .theme-icon-moon {
 
 .clause-diff {
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 260px;
   margin-bottom: 20px;
   overflow: clip;
   border: 1px solid var(--line);
@@ -1072,12 +1116,55 @@ html[data-theme="light"] .theme-icon-moon {
   font: 650 11px var(--font-mono);
 }
 
+.clause-id-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.clause-id-change .id-old {
+  color: var(--red);
+  text-decoration: line-through;
+}
+
+.clause-id-change .id-new {
+  color: var(--green);
+}
+
 .clause-diff-header .clause-title {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.clause-diff-header .title-change {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.title-old,
+.title-new {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-old {
+  flex: 0 1 auto;
+  color: var(--red);
+  text-decoration: line-through;
+}
+
+.title-new {
+  flex: 0 1 auto;
+  color: var(--green);
+}
+
+.title-change-arrow {
+  flex: 0 0 auto;
+  color: var(--text-faint);
 }
 
 .clause-version-context {
@@ -1306,6 +1393,20 @@ html[data-theme="light"] .theme-icon-moon {
   display: block;
   max-width: 100%;
   height: auto;
+}
+
+.clause-image img[data-src] {
+  width: 112px;
+  height: 68px;
+  border-radius: 3px;
+  background:
+    linear-gradient(100deg, #eef2f7 25%, #f8fafc 38%, #eef2f7 52%);
+  background-size: 220% 100%;
+  animation: imagePlaceholder 1.35s ease-in-out infinite;
+}
+
+@keyframes imagePlaceholder {
+  to { background-position-x: -220%; }
 }
 
 /* Progress and errors */

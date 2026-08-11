@@ -5,8 +5,9 @@ Handles both .doc (older) and .docx (newer) formats.
 import os
 import re
 import subprocess
-import shutil
+import threading
 import zipfile
+import logging
 from pathlib import Path
 
 CACHE_DIR = Path(__file__).parent / "cache"
@@ -15,12 +16,15 @@ CACHE_DIR = Path(__file__).parent / "cache"
 FTP_BASE = "https://www.3gpp.org/ftp/Specs/archive"
 
 CURL_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+logger = logging.getLogger(__name__)
 
 
 def _curl(url: str, timeout: int = 60) -> str:
     """Fetch URL with curl (3GPP blocks python urllib)."""
     result = subprocess.run(
-        ["curl", "-s", "-L", "-A", CURL_UA, "--max-time", str(timeout), url],
+        ["curl", "-sS", "-f", "-L", "-A", CURL_UA,
+         "--connect-timeout", "10", "--retry", "2", "--retry-delay", "1",
+         "--retry-all-errors", "--max-time", str(timeout), url],
         capture_output=True,
         text=True,
         timeout=timeout + 10,
@@ -33,7 +37,9 @@ def _curl(url: str, timeout: int = 60) -> str:
 def _curl_binary(url: str, outpath: Path, timeout: int = 120):
     """Download binary file with curl."""
     result = subprocess.run(
-        ["curl", "-s", "-L", "-A", CURL_UA, "--max-time", str(timeout),
+        ["curl", "-sS", "-f", "-L", "-A", CURL_UA,
+         "--connect-timeout", "10", "--retry", "2", "--retry-delay", "1",
+         "--retry-all-errors", "--max-time", str(timeout),
          "-o", str(outpath), url],
         capture_output=True,
         text=True,
@@ -154,7 +160,7 @@ def _list_versions_from_ftp(spec: str, timeout: int = 30) -> list[dict]:
     try:
         html = _curl(url, timeout=timeout)
     except Exception as e:
-        print(f"Warning: FTP listing failed: {e}")
+        logger.warning("FTP listing failed for %s: %s", spec, e)
         return []
 
     versions = []
@@ -200,20 +206,21 @@ def download_spec(spec: str, version: str) -> Path:
             return cache_path
         cache_path.unlink()
 
-    print(f"Downloading {url} ...")
-    _curl_binary(url, cache_path, timeout=120)
-
-    if not _is_valid_zip(cache_path):
-        cache_path.unlink()
-        raise FileNotFoundError(f"Downloaded file is not a valid ZIP: {url}")
-
-    print(f"  -> saved to {cache_path}")
+    temp_path = cache_path.with_name(
+        f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.part"
+    )
+    try:
+        _curl_binary(url, temp_path, timeout=120)
+        if not _is_valid_zip(temp_path):
+            raise FileNotFoundError(f"Downloaded file is not a valid ZIP: {url}")
+        os.replace(temp_path, cache_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
     return cache_path
 
 
 def _is_valid_zip(path: Path) -> bool:
     """Check if file is a valid ZIP (not an HTML error page)."""
-    import zipfile
     try:
         with zipfile.ZipFile(path, "r") as zf:
             zf.namelist()
@@ -222,26 +229,51 @@ def _is_valid_zip(path: Path) -> bool:
         return False
 
 
-def extract_doc_path(spec: str, version: str) -> Path:
-    """Download (if needed) and extract the .doc/.docx from ZIP, return its path."""
+def _document_files(extract_dir: Path) -> list[Path]:
+    """Return all document parts, preferring converted DOCX twins over DOC."""
+    selected = {}
+    for path in extract_dir.iterdir():
+        suffix = path.suffix.lower()
+        if suffix not in ('.doc', '.docx'):
+            continue
+        key = path.stem.casefold()
+        existing = selected.get(key)
+        if existing is None or (existing.suffix.lower() == '.doc' and suffix == '.docx'):
+            selected[key] = path
+    def natural_name_key(path):
+        return tuple(
+            (1, int(part)) if part.isdigit() else (0, part.casefold())
+            for part in re.split(r"(\d+)", path.name)
+        )
+
+    return sorted(selected.values(), key=natural_name_key)
+
+
+def extract_doc_paths(spec: str, version: str) -> list[Path]:
+    """Download and extract every ordered document part in a spec archive."""
     zip_path = download_spec(spec, version)
 
     extract_dir = CACHE_DIR / spec.replace(".", "_") / version
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if already extracted
-    existing = [f for f in extract_dir.iterdir() if f.suffix in ('.doc', '.docx')]
+    existing = _document_files(extract_dir)
     if existing:
-        return existing[0]
+        return existing
 
     # Extract
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
 
-    extracted = [f for f in extract_dir.iterdir() if f.suffix in ('.doc', '.docx')]
+    extracted = _document_files(extract_dir)
     if not extracted:
         raise FileNotFoundError(f"No .doc/.docx in {zip_path}")
-    return extracted[0]
+    return extracted
+
+
+def extract_doc_path(spec: str, version: str) -> Path:
+    """Backward-compatible helper returning the first document part."""
+    return extract_doc_paths(spec, version)[0]
 
 
 def list_versions(spec: str, timeout: int = 30) -> list[dict]:

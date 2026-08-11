@@ -10,6 +10,17 @@ const state = {
 const $ = id => document.getElementById(id);
 const _escDiv = document.createElement('div');
 const escapeHtml = str => { _escDiv.textContent = str; return _escDiv.innerHTML; };
+const INITIAL_CONTENT_HTML = $('content').innerHTML;
+const INITIAL_TOC_HTML = $('tocTree').innerHTML;
+const compareVersions = (left, right) => {
+  const a = String(left).split('.').map(Number);
+  const b = String(right).split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const difference = (a[i] || 0) - (b[i] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+};
 
 const THEME_STORAGE_KEY = '3gpp-delta-theme';
 
@@ -88,34 +99,88 @@ function renderProgress(steps, currentStep) {
 }
 
 let _diffAbortController = null;
+let _diffEventSource = null;
+let _versionLoadGeneration = 0;
 
 async function fetchDiffWithProgress(spec, v1, v2, refresh) {
-  const steps = ['Loading release data', 'Reading clause changes', 'Preparing workspace'];
-  const startTime = performance.now();
-  const minimumDisplayMs = 220;
+  const steps = [`Parse v${v1}`, `Parse v${v2}`, 'Compare clauses', 'Load workspace'];
   $('content').innerHTML = renderProgress(steps, 0);
 
   _diffAbortController?.abort();
+  _diffEventSource?.close();
   _diffAbortController = new AbortController();
+  const signal = _diffAbortController.signal;
   const params = new URLSearchParams({spec, v1, v2});
   if (refresh) params.set('refresh', '1');
 
-  const response = await fetch(`/api/diff?${params}`, {
-    signal: _diffAbortController.signal,
+  let usedProgressStream = false;
+  if ('EventSource' in window) {
+    const streamParams = new URLSearchParams(params);
+    streamParams.set('compact', '1');
+    try {
+      await new Promise((resolve, reject) => {
+        const source = new EventSource(`/api/diff-stream?${streamParams}`);
+        _diffEventSource = source;
+        let settled = false;
+
+        const finish = callback => {
+          if (settled) return;
+          settled = true;
+          source.close();
+          if (_diffEventSource === source) _diffEventSource = null;
+          signal.removeEventListener('abort', onAbort);
+          callback();
+        };
+        const onAbort = () => finish(() => reject(new DOMException('Comparison cancelled', 'AbortError')));
+
+        source.addEventListener('progress', event => {
+          try {
+            const progress = JSON.parse(event.data);
+            const step = Math.max(0, Math.min(2, Number(progress.step) || 0));
+            $('content').innerHTML = renderProgress(steps, step);
+          } catch (_) {}
+        });
+        source.addEventListener('done', () => finish(resolve));
+        source.addEventListener('error', event => {
+          let message = 'Progress connection failed';
+          const error = new Error(message);
+          if (event.data) {
+            try { message = JSON.parse(event.data).message || message; } catch (_) {}
+            error.message = message;
+            error.name = 'ComparisonError';
+          } else {
+            error.name = 'ProgressConnectionError';
+          }
+          finish(() => reject(error));
+        });
+        signal.addEventListener('abort', onAbort, {once: true});
+      });
+      usedProgressStream = true;
+    } catch (error) {
+      if (error.name !== 'ProgressConnectionError') throw error;
+      // Some reverse proxies disable SSE. The regular endpoint remains fully
+      // functional, so continue without live progress instead of failing.
+    }
+  }
+
+  $('content').innerHTML = renderProgress(steps, 3);
+  // The progress request has already performed a forced refresh. Fetch the
+  // compact, pre-serialized result without asking the backend to recompute it.
+  const resultParams = new URLSearchParams({spec, v1, v2});
+  resultParams.set('view', 'changes');
+  if (refresh && !usedProgressStream) resultParams.set('refresh', '1');
+  const response = await fetch(`/api/diff?${resultParams}`, {
+    signal,
     headers: {'Accept': 'application/json'},
+    cache: refresh ? 'reload' : 'default',
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error || `Comparison failed (${response.status})`);
   }
 
-  $('content').innerHTML = renderProgress(steps, 1);
   const result = await response.json();
   if (result.error) throw new Error(result.error);
-  $('content').innerHTML = renderProgress(steps, 2);
-
-  const remaining = minimumDisplayMs - (performance.now() - startTime);
-  if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
   return result;
 }
 
@@ -201,7 +266,7 @@ function renderImageThumbnails(images, spec, version) {
     const src = `/api/image/${spec}/${version}/${img.src}`;
     const alt = img.alt || '';
     html += `<button class="clause-image" type="button" data-image-src="${escapeHtml(src)}" data-image-alt="${escapeHtml(alt)}" aria-label="Open figure ${escapeHtml(alt)}">
-      <img src="${src}" alt="${escapeHtml(alt)}" loading="lazy">
+      <img data-src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" loading="lazy">
     </button>`;
   }
   html += '</div>';
@@ -213,9 +278,10 @@ function renderImageThumbnails(images, spec, version) {
 async function loadSpecs() {
   try {
     const resp = await fetch('/api/specs');
+    if (!resp.ok) throw new Error(`Unable to load specs (${resp.status})`);
     const specs = await resp.json();
     $('specSelect').innerHTML = specs.map(s =>
-      `<option value="${s.id}">${s.title || 'TS ' + s.id}</option>`
+      `<option value="${escapeHtml(s.id)}">${escapeHtml(s.title || 'TS ' + s.id)}</option>`
     ).join('') || '<option value="">No specs downloaded</option>';
 
     if (specs.length > 0) {
@@ -235,7 +301,8 @@ async function loadSpecs() {
 
 async function loadVersions() {
   const spec = $('specSelect').value;
-  if (!spec) return;
+  if (!spec) return false;
+  const loadGeneration = ++_versionLoadGeneration;
   state.currentSpec = spec;
 
   $('v1Select').innerHTML = '<option value="">Loading...</option>';
@@ -243,19 +310,23 @@ async function loadVersions() {
   $('diffBtn').disabled = true;
 
   try {
-    const resp = await fetch(`/api/versions?spec=${spec}`);
+    const resp = await fetch(`/api/versions?${new URLSearchParams({spec})}`);
+    if (!resp.ok) throw new Error(`Unable to load versions (${resp.status})`);
     const versions = await resp.json();
+    if (loadGeneration !== _versionLoadGeneration || $('specSelect').value !== spec) {
+      return false;
+    }
     state.versions = versions;
 
     if (versions.length === 0) {
       $('v1Select').innerHTML = '<option value="">No versions cached</option>';
       $('v2Select').innerHTML = '<option value="">No versions cached</option>';
       $('diffBtn').disabled = true;
-      return;
+      return false;
     }
 
     const opts = versions.map(v =>
-      `<option value="${v.version}">${v.label || 'Rel-' + v.release + ' (' + v.version + ')'}</option>`
+      `<option value="${escapeHtml(v.version)}">${escapeHtml(v.label || 'Rel-' + v.release + ' (' + v.version + ')')}</option>`
     ).join('');
 
     $('v1Select').innerHTML = '<option value="">Select older version...</option>' + opts;
@@ -263,7 +334,7 @@ async function loadVersions() {
 
     // Auto-select latest two releases
     if (versions.length >= 2) {
-      const sorted = [...versions].sort((a, b) => b.release - a.release);
+      const sorted = [...versions].sort((a, b) => compareVersions(b.version, a.version));
       $('v2Select').value = sorted[0].version;
       const prevRelease = sorted[0].release - 1;
       const prev = sorted.find(v => v.release === prevRelease && v.version.endsWith('.0.0'));
@@ -274,11 +345,17 @@ async function loadVersions() {
       }
     }
 
-    $('diffBtn').disabled = false;
+    $('diffBtn').disabled = !($('v1Select').value && $('v2Select').value);
+    return true;
 
   } catch (err) {
+    if (loadGeneration !== _versionLoadGeneration || $('specSelect').value !== spec) {
+      return false;
+    }
     $('v1Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
     $('v2Select').innerHTML = `<option value="">Error: ${err.message}</option>`;
+    $('diffBtn').disabled = true;
+    return false;
   }
 }
 
@@ -287,6 +364,10 @@ async function loadVersions() {
 async function downloadSpec() {
   const spec = $('specInput').value.trim();
   if (!spec) { showToast('Please enter a spec number', 'error'); return; }
+  if (!/^\d{2,3}\.\d{3}$/.test(spec)) {
+    showToast('Use a spec number such as 23.501', 'error');
+    return;
+  }
 
   const btn = $('downloadBtn');
   const prog = $('downloadProgress');
@@ -308,6 +389,7 @@ async function downloadSpec() {
       body: JSON.stringify({spec}),
     });
     const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || `Download failed (${resp.status})`);
     if (data.status === 'already_running') {
       prog.textContent = `[${elapsed()}] Already downloading...`;
     }
@@ -320,11 +402,17 @@ async function downloadSpec() {
       await new Promise(r => setTimeout(r, pollInterval));
       pollCount++;
       if (pollCount > 30) pollInterval = Math.min(pollInterval * 1.5, 5000);
-      const sr = await fetch(`/api/download-status?spec=${spec}`);
+      const sr = await fetch(`/api/download-status?${new URLSearchParams({spec})}`);
       const st = await sr.json();
            if (st.status === 'listing')      prog.textContent = `[${elapsed()}] Listing releases...`;
       else if (st.status === 'downloading')  prog.textContent = `[${elapsed()}] Downloading ${st.done}/${st.total} releases...`;
-      else if (st.status === 'completed')    { prog.textContent = `[${elapsed()}] Download complete!`; break; }
+      else if (st.status === 'completed')    {
+        const unavailable = Number(st.failed) || 0;
+        prog.textContent = unavailable
+          ? `[${elapsed()}] Downloaded ${st.available}/${st.total} releases (${unavailable} unavailable)`
+          : `[${elapsed()}] Download complete!`;
+        break;
+      }
       else if (st.status === 'error')        throw new Error(st.error || 'Download failed');
       /* else 'not_found' — keep polling */
     }
@@ -353,12 +441,15 @@ async function downloadSpec() {
           await new Promise(r => setTimeout(r, pcInterval));
           pcCount++;
           if (pcCount > 20) pcInterval = Math.min(pcInterval * 1.5, 5000);
-          const sr = await fetch(`/api/precompute-status?spec=${spec}`);
+          const sr = await fetch(`/api/precompute-status?${new URLSearchParams({spec})}`);
           const st = await sr.json();
           if (st.status === 'computing') {
-            prog.textContent = `[${elapsed()}] Computing diffs ${st.done}/${st.total}...`;
+            prog.textContent = `[${elapsed()}] Checked ${st.processed}/${st.total} pairs; ${st.done} ready...`;
           } else if (st.status === 'completed') {
             prog.textContent = `[${elapsed()}] All diffs ready!`;
+            break;
+          } else if (st.status === 'partial') {
+            prog.textContent = `[${elapsed()}] ${st.done}/${st.total} diffs ready; ${st.failed} failed`;
             break;
           } else if (st.status === 'error') {
             prog.textContent = `[${elapsed()}] Diff compute error: ${st.error || 'unknown'}`;
@@ -380,8 +471,36 @@ async function downloadSpec() {
 
 // ===================== TOC RENDER =====================
 let _tocRecords = [];
+let _activeTocIndex = -1;
+let _tocSearchAbortController = null;
 
-function renderToc(clauses) {
+function updateTocSearchSummary(matchCount = null, searching = false) {
+  const summary = $('tocSearchSummary');
+  if (!summary) return;
+  summary.classList.toggle('searching', searching);
+  if (searching) {
+    summary.textContent = 'Searching full clause text';
+    summary.hidden = false;
+  } else if (matchCount === null) {
+    summary.textContent = '';
+    summary.hidden = true;
+  } else {
+    summary.textContent = matchCount === 1 ? '1 matching clause' : `${matchCount} matching clauses`;
+    summary.hidden = false;
+  }
+}
+
+function applyTocFilter(predicate) {
+  let matches = 0;
+  _tocRecords.forEach((record, index) => {
+    const match = predicate(record, index);
+    record.element.hidden = !match;
+    if (match) matches += 1;
+  });
+  return matches;
+}
+
+function renderToc(clauses, preparedFlat = null) {
   const tree = $('tocTree');
   if (!clauses || clauses.length === 0) {
     tree.innerHTML = '<div class="toc-no-results">No clauses found</div>';
@@ -390,7 +509,7 @@ function renderToc(clauses) {
   }
 
   let html = '';
-  const flat = flattenClauseTree(clauses);
+  const flat = preparedFlat || flattenClauseTree(clauses);
   flat.forEach((node, index) => { node._flatIndex = index; });
 
   for (let index = 0; index < flat.length; index++) {
@@ -398,13 +517,10 @@ function renderToc(clauses) {
     const display = getClauseDisplayParts(node);
     const indent = node._depth;
     const status = node.status || 'unchanged';
-    const statusDot = status !== 'unchanged'
-      ? `<span class="status-dot ${status}"></span>`
-      : '<span class="status-dot unchanged"></span>';
     const id = node.id || '';
 
-    html += `<button class="toc-item" type="button" style="--indent:${indent}" data-id="${escapeHtml(id)}" data-clause-index="${index}">
-      ${statusDot}
+    const active = index === _activeTocIndex ? ' active' : '';
+    html += `<button class="toc-item status-${status}${active}" type="button" style="--indent:${indent}" data-id="${escapeHtml(id)}" data-clause-index="${index}">
       <span class="toc-id">${escapeHtml(display.id)}</span>
       <span class="toc-title">${escapeHtml(display.title)}</span>
     </button>`;
@@ -415,29 +531,95 @@ function renderToc(clauses) {
   _tocRecords = flat.map((node, index) => ({
     element: items[index],
     node,
-    heading: `${node.id || ''} ${node.title || ''}`.toLowerCase(),
+    heading: [node.id, node.title, node.old_id, node.old_title]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase(),
   }));
 
   return flat;
 }
 
-window.filterToc = function() {
+window.filterToc = async function() {
   const input = $('tocSearchInput');
   const raw = input.value.trim().toLowerCase();
   const keywords = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (keywords.length === 0) {
+    _tocSearchAbortController?.abort();
+    _tocSearchAbortController = null;
+    $('tocSearch').removeAttribute('aria-busy');
     _tocRecords.forEach(record => { record.element.hidden = false; });
+    updateTocSearchSummary();
     return;
   }
 
-  _tocRecords.forEach(record => {
-    const bodyFields = [record.node.body, record.node.old_body, record.node.new_body];
-    const match = keywords.some(keyword =>
-      record.heading.includes(keyword) || bodyFields.some(body => body && body.toLowerCase().includes(keyword))
-    );
-    record.element.hidden = !match;
+  if (state.diffData?.view !== 'changes') {
+    const count = applyTocFilter(record => {
+      const fields = [
+        record.heading,
+        record.node.body,
+        record.node.old_body,
+        record.node.new_body,
+      ];
+      return keywords.some(keyword =>
+        fields.some(value => value && value.toLowerCase().includes(keyword))
+      );
+    });
+    updateTocSearchSummary(count);
+    return;
+  }
+
+  // Give immediate heading results while the server searches unchanged bodies
+  // that were intentionally omitted from the lightweight initial response.
+  const headingCount = applyTocFilter(record =>
+    keywords.some(keyword => record.heading.includes(keyword))
+  );
+  updateTocSearchSummary(headingCount, true);
+
+  _tocSearchAbortController?.abort();
+  const controller = new AbortController();
+  _tocSearchAbortController = controller;
+  const comparison = state.diffData;
+  const generation = _renderGeneration;
+  const params = new URLSearchParams({
+    spec: comparison.spec,
+    v1: comparison.old_version,
+    v2: comparison.new_version,
+    q: raw,
   });
+  $('tocSearch').setAttribute('aria-busy', 'true');
+  try {
+    const response = await fetch(`/api/diff-search?${params}`, {
+      signal: controller.signal,
+      headers: {'Accept': 'application/json'},
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `Search failed (${response.status})`);
+    }
+    const result = await response.json();
+    if (!Array.isArray(result.matches)) throw new Error('Invalid search response');
+    if (
+      controller.signal.aborted
+      || generation !== _renderGeneration
+      || input.value.trim().toLowerCase() !== raw
+    ) return;
+    const matchedIndexes = new Set(result.matches);
+    const count = applyTocFilter((_record, index) => matchedIndexes.has(index));
+    updateTocSearchSummary(count);
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      updateTocSearchSummary(headingCount);
+      showToast(`Unable to search full text: ${error.message}`, 'error');
+    }
+  } finally {
+    if (_tocSearchAbortController === controller) {
+      _tocSearchAbortController = null;
+      $('tocSearch').removeAttribute('aria-busy');
+    }
+  }
 };
 
 // ===================== DIFF RENDER =====================
@@ -450,10 +632,90 @@ let _renderedClauseCount = 0;
 let _renderGeneration = 0;
 let _clauseObserver = null;
 let _wordDiffObserver = null;
+let _imageObserver = null;
+let _fullDiffPromise = null;
 
 const scheduleIdle = window.requestIdleCallback
   ? callback => window.requestIdleCallback(callback, {timeout: 350})
   : callback => window.setTimeout(callback, 0);
+
+function prepareComparisonLoading() {
+  _renderGeneration += 1;
+  _clauseObserver?.disconnect();
+  _wordDiffObserver?.disconnect();
+  _imageObserver?.disconnect();
+  _tocSearchAbortController?.abort();
+  _tocSearchAbortController = null;
+  state.diffData = null;
+  _showUnchanged = false;
+  _allClauseNodes = [];
+  _renderNodes = [];
+  _renderPositionByFlatIndex = new Map();
+  _renderedClauseCount = 0;
+  _tocRecords = [];
+  _activeTocIndex = -1;
+  _changedIndexes = [];
+  _navIndex = -1;
+  _fullDiffPromise = null;
+  $('statsBar').replaceChildren();
+  $('statsBar').hidden = true;
+  $('tocTree').innerHTML = '<div class="toc-empty"><p>Preparing comparison…</p></div>';
+  $('tocSearch').hidden = true;
+  updateTocSearchSummary();
+  $('clauseNav').classList.remove('visible');
+}
+
+async function ensureFullDiffData() {
+  const partial = state.diffData;
+  if (!partial || partial.view !== 'changes') return partial;
+  if (_fullDiffPromise) return _fullDiffPromise;
+
+  const generation = _renderGeneration;
+  const params = new URLSearchParams({
+    spec: partial.spec,
+    v1: partial.old_version,
+    v2: partial.new_version,
+  });
+  const promise = (async () => {
+    const response = await fetch(`/api/diff?${params}`, {
+      signal: _diffAbortController?.signal,
+      headers: {'Accept': 'application/json'},
+      cache: 'no-cache',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `Unable to load full comparison (${response.status})`);
+    }
+    const full = await response.json();
+    if (generation !== _renderGeneration || state.diffData !== partial) {
+      return state.diffData;
+    }
+
+    const fullFlat = flattenClauseTree(full.clauses || []);
+    if (fullFlat.length !== _allClauseNodes.length) {
+      throw new Error('Comparison changed while full text was loading');
+    }
+    for (let index = 0; index < fullFlat.length; index++) {
+      const target = _allClauseNodes[index];
+      const source = fullFlat[index];
+      if (target.id !== source.id || target.status !== source.status) {
+        throw new Error('Comparison changed while full text was loading');
+      }
+      const depth = target._depth;
+      Object.assign(target, source, {_depth: depth, _flatIndex: index});
+      if (_tocRecords[index]) _tocRecords[index].node = target;
+    }
+    full.view = 'full';
+    state.diffData = full;
+    return full;
+  })();
+  _fullDiffPromise = promise;
+  try {
+    return await promise;
+  } finally {
+    if (_fullDiffPromise === promise) _fullDiffPromise = null;
+  }
+}
 
 function queueWordDiff(element, node, generation) {
   if (element.dataset.wordDiffState) return;
@@ -495,6 +757,15 @@ function appendClauseBatch(minimumEnd = 0) {
     const element = document.getElementById(`clause-${node._flatIndex}`);
     if (element) _wordDiffObserver?.observe(element);
   }
+  for (const image of list.querySelectorAll('img[data-src]:not([data-image-observed])')) {
+    image.dataset.imageObserved = 'true';
+    if (_imageObserver) {
+      _imageObserver.observe(image);
+    } else {
+      image.src = image.dataset.src;
+      image.removeAttribute('data-src');
+    }
+  }
 
   const sentinel = $('renderSentinel');
   if (sentinel) {
@@ -509,6 +780,7 @@ function startClauseRendering(showUnchanged) {
   const generation = _renderGeneration;
   _clauseObserver?.disconnect();
   _wordDiffObserver?.disconnect();
+  _imageObserver?.disconnect();
 
   _renderNodes = showUnchanged
     ? _allClauseNodes
@@ -529,6 +801,15 @@ function startClauseRendering(showUnchanged) {
     }
   }, {root: $('content'), rootMargin: '650px 0px'});
 
+  _imageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      _imageObserver.unobserve(entry.target);
+      entry.target.src = entry.target.dataset.src;
+      entry.target.removeAttribute('data-src');
+    }
+  }, {root: $('content'), rootMargin: '450px 0px'});
+
   _clauseObserver = new IntersectionObserver(entries => {
     if (entries.some(entry => entry.isIntersecting)) appendClauseBatch();
   }, {root: $('content'), rootMargin: '1000px 0px'});
@@ -537,6 +818,7 @@ function startClauseRendering(showUnchanged) {
 }
 
 function renderDiff(diffData) {
+  _fullDiffPromise = null;
   _showUnchanged = false;
   const container = $('content');
   const stats = diffData.stats;
@@ -560,18 +842,35 @@ function renderDiff(diffData) {
 
   const uncCb = $(toggleId);
   if (uncCb) {
-    uncCb.addEventListener('change', () => {
+    uncCb.addEventListener('change', async () => {
+      if (uncCb.checked && state.diffData?.view === 'changes') {
+        uncCb.disabled = true;
+        try {
+          await ensureFullDiffData();
+        } catch (error) {
+          uncCb.checked = false;
+          if (error.name !== 'AbortError') showToast(`Unable to load unchanged clauses: ${error.message}`, 'error');
+        } finally {
+          if (uncCb.isConnected) uncCb.disabled = false;
+        }
+      }
+      if (!uncCb.isConnected) return;
       _showUnchanged = uncCb.checked;
       startClauseRendering(_showUnchanged);
       $('content').scrollTo({top: 0});
     });
   }
 
-  // Render TOC (returns flattened list to avoid duplicate traversal)
-  const flat = renderToc(diffData.clauses) || [];
-  $('tocSearch').hidden = false;
+  // Flatten immediately for the content pane, but defer the thousands of TOC
+  // elements until after the first clause batch can paint.
+  const flat = flattenClauseTree(diffData.clauses);
+  flat.forEach((node, index) => { node._flatIndex = index; });
+  _tocRecords = [];
+  _activeTocIndex = -1;
+  $('tocTree').innerHTML = '<div class="toc-empty"><p>Building clause index…</p></div>';
+  $('tocSearch').hidden = true;
   $('tocSearchInput').value = '';
-  document.querySelectorAll('.toc-children').forEach(e => e.classList.add('open'));
+  updateTocSearchSummary();
   const html = `<div class="diff-header">
     <h2>${escapeHtml(diffData.title || '')}</h2>
     <div class="subtitle">
@@ -588,13 +887,44 @@ function renderDiff(diffData) {
   _allClauseNodes = flat;
   startClauseRendering(false);
   _updateNavState(flat);
+  // Content rendering may restart immediately when a deep link opens an
+  // unchanged clause. The flattened node array remains the identity of this
+  // comparison, so use it to reject stale work without cancelling the TOC for
+  // a valid view-mode change.
+  const tocNodes = flat;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    scheduleIdle(() => {
+      if (_allClauseNodes !== tocNodes) return;
+      renderToc(diffData.clauses, flat);
+      $('tocSearch').hidden = false;
+    });
+  }));
 }
 
 function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const status = node.status || 'unchanged';
   const id = node.id || '';
   const display = getClauseDisplayParts(node);
+  const oldDisplay = node.old_title
+    ? getClauseDisplayParts({id: node.old_id || node.id, title: node.old_title})
+    : null;
   const clauseId = `clause-${node._flatIndex}`;
+  const idHtml = node.old_id
+    ? `<span class="clause-id clause-id-change" title="Clause identifier changed">
+        <span class="id-old">${escapeHtml(oldDisplay.id)}</span>
+        <span aria-hidden="true">→</span>
+        <span class="id-new">${escapeHtml(display.id)}</span>
+      </span>`
+    : `<span class="clause-id">${escapeHtml(display.id)}</span>`;
+  const titleChanged = oldDisplay &&
+    oldDisplay.title.replace(/\s+/g, ' ').trim() !== display.title.replace(/\s+/g, ' ').trim();
+  const titleHtml = titleChanged
+    ? `<span class="clause-title title-change" title="Clause title changed">
+        <span class="title-old">${escapeHtml(oldDisplay.title)}</span>
+        <span class="title-change-arrow" aria-hidden="true">→</span>
+        <span class="title-new">${escapeHtml(display.title)}</span>
+      </span>`
+    : `<span class="clause-title">${escapeHtml(display.title)}</span>`;
 
   let bodyHtml = '';
   let versionContextHtml = '';
@@ -678,9 +1008,9 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
 
   return `<article class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
     <div class="clause-diff-header">
-      <span class="clause-id">${escapeHtml(display.id)}</span>
+      ${idHtml}
       ${versionContextHtml}
-      <span class="clause-title">${escapeHtml(display.title)}</span>
+      ${titleHtml}
       <span class="status-badge ${status}">${status}</span>
     </div>
     ${bodyHtml}
@@ -955,10 +1285,19 @@ function _mergeDiffOps(ops) {
 
 // ===================== SCROLL TO CLAUSE =====================
 async function ensureClauseRendered(flatIndex) {
-  const node = _allClauseNodes[flatIndex];
+  let node = _allClauseNodes[flatIndex];
   if (!node) return null;
 
   if (node.status === 'unchanged' && !_showUnchanged) {
+    if (state.diffData?.view === 'changes') {
+      try {
+        await ensureFullDiffData();
+      } catch (error) {
+        if (error.name !== 'AbortError') showToast(`Unable to load clause: ${error.message}`, 'error');
+        return null;
+      }
+      node = _allClauseNodes[flatIndex];
+    }
     _showUnchanged = true;
     const checkbox = $('uncToggle');
     if (checkbox) checkbox.checked = true;
@@ -967,27 +1306,48 @@ async function ensureClauseRendered(flatIndex) {
 
   const targetPosition = _renderPositionByFlatIndex.get(flatIndex);
   if (targetPosition === undefined) return null;
-  while (_renderedClauseCount <= targetPosition) {
-    appendClauseBatch();
+  if (_renderedClauseCount <= targetPosition) {
+    // Build one fragment up to the requested clause. Repeated 36-item DOM
+    // insertions make deep TOC jumps progressively slower on long specs.
+    appendClauseBatch(targetPosition + 1);
+    await new Promise(resolve => requestAnimationFrame(resolve));
     await new Promise(resolve => requestAnimationFrame(resolve));
   }
 
   return document.getElementById(`clause-${flatIndex}`);
 }
 
-window.scrollToClause = async function(clauseReference) {
+window.scrollToClause = async function(clauseReference, options = {}) {
   let flatIndex;
-  if (typeof clauseReference === 'number' || /^\d+$/.test(String(clauseReference))) {
+  if (typeof clauseReference === 'number') {
     flatIndex = Number(clauseReference);
   } else {
-    flatIndex = _allClauseNodes.findIndex(node => node.id === clauseReference);
+    flatIndex = _allClauseNodes.findIndex(node => node.id === String(clauseReference));
   }
 
   const element = await ensureClauseRendered(flatIndex);
   if (!element) return;
-  element.scrollIntoView({behavior: 'smooth', block: 'start'});
+  const content = $('content');
+  const distance = Math.abs(
+    element.getBoundingClientRect().top - content.getBoundingClientRect().top
+  );
+  element.scrollIntoView({
+    behavior: distance > content.clientHeight * 2 ? 'auto' : 'smooth',
+    block: 'start',
+  });
+  _activeTocIndex = flatIndex;
   document.querySelectorAll('.toc-item.active').forEach(item => item.classList.remove('active'));
   document.querySelector(`.toc-item[data-clause-index="${flatIndex}"]`)?.classList.add('active');
+  if (options.updateURL !== false) {
+    const node = _allClauseNodes[flatIndex];
+    _updateURL(
+      state.currentSpec,
+      state.diffData?.old_version,
+      state.diffData?.new_version,
+      node?.id,
+      true,
+    );
+  }
   if (mobileTocQuery.matches) setMobileToc(false);
 };
 
@@ -1020,14 +1380,61 @@ window.navChanged = function(dir) {
 };
 
 // ===================== URL DEEP LINKING =====================
-function _updateURL(spec, v1, v2) {
+function _updateURL(spec, v1, v2, clause = '', replace = false) {
   const params = new URLSearchParams();
   if (spec) params.set('spec', spec);
   if (v1) params.set('v1', v1);
   if (v2) params.set('v2', v2);
+  if (clause) params.set('clause', clause);
   const qs = params.toString();
   const url = qs ? `${location.pathname}?${qs}` : location.pathname;
-  history.pushState(null, '', url);
+  if (`${location.pathname}${location.search}` === url) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', url);
+}
+
+function _resetWorkspace() {
+  _runGeneration += 1;
+  _versionLoadGeneration += 1;
+  _renderGeneration += 1;
+  _diffAbortController?.abort();
+  _diffEventSource?.close();
+  _diffAbortController = null;
+  _diffEventSource = null;
+  _clauseObserver?.disconnect();
+  _wordDiffObserver?.disconnect();
+  _imageObserver?.disconnect();
+  _tocSearchAbortController?.abort();
+  _tocSearchAbortController = null;
+  state.diffData = null;
+  _showUnchanged = false;
+  _allClauseNodes = [];
+  _renderNodes = [];
+  _renderPositionByFlatIndex = new Map();
+  _renderedClauseCount = 0;
+  _tocRecords = [];
+  _activeTocIndex = -1;
+  _changedIndexes = [];
+  _navIndex = -1;
+  _fullDiffPromise = null;
+  $('content').innerHTML = INITIAL_CONTENT_HTML;
+  $('content').scrollTop = 0;
+  $('statsBar').replaceChildren();
+  $('statsBar').hidden = true;
+  $('tocTree').innerHTML = INITIAL_TOC_HTML;
+  $('tocSearch').hidden = true;
+  updateTocSearchSummary();
+  $('tocSearchInput').value = '';
+  $('refreshBtn').hidden = true;
+  $('clauseNav').classList.remove('visible');
+  $('diffBtn').disabled = !($('v1Select').value && $('v2Select').value);
+  $('diffBtn').querySelector('span').textContent = 'Compare';
+  setMobileToc(false);
+}
+
+function _resetForSelectionChange() {
+  const hadComparisonURL = Boolean(location.search);
+  _resetWorkspace();
+  if (hadComparisonURL) history.pushState(null, '', location.pathname);
 }
 
 async function _restoreFromURL() {
@@ -1059,10 +1466,15 @@ window.addEventListener('popstate', () => {
   const spec = params.get('spec');
   const v1 = params.get('v1');
   const v2 = params.get('v2');
+  _resetWorkspace();
   if (spec && v1 && v2) {
     $('specSelect').value = spec;
     state.currentSpec = spec;
-    loadVersions().then(() => {
+    loadVersions().then(loaded => {
+      const current = new URLSearchParams(location.search);
+      if (!loaded || current.get('spec') !== spec || current.get('v1') !== v1 || current.get('v2') !== v2) {
+        return;
+      }
       $('v1Select').value = v1;
       $('v2Select').value = v2;
       window.runDiff();
@@ -1071,9 +1483,13 @@ window.addEventListener('popstate', () => {
 });
 
 // ===================== MAIN FLOW =====================
+let _runGeneration = 0;
+
 window.runDiff = async function(refresh) {
+  const spec = state.currentSpec;
   const v1 = $('v1Select').value;
   const v2 = $('v2Select').value;
+  const requestedClause = new URLSearchParams(location.search).get('clause') || '';
 
   if (!v1 || !v2) {
     showToast('Please select both versions', 'error');
@@ -1099,18 +1515,27 @@ window.runDiff = async function(refresh) {
   $('diffBtn').disabled = true;
   $('refreshBtn').hidden = true;
   $('diffBtn').querySelector('span').textContent = 'Loading…';
+  const runGeneration = ++_runGeneration;
+  prepareComparisonLoading();
 
   try {
-    const diff = await fetchDiffWithProgress(state.currentSpec, v1, v2, refresh);
+    const diff = await fetchDiffWithProgress(spec, v1, v2, refresh);
+    if (runGeneration !== _runGeneration) return;
     state.diffData = diff;
     renderDiff(diff);
     $('refreshBtn').hidden = false;
-    _updateURL(state.currentSpec, v1, v2);
+    _updateURL(spec, v1, v2, requestedClause);
+    if (requestedClause) {
+      window.scrollToClause(requestedClause, {updateURL: false});
+    }
   } catch (err) {
+    if (runGeneration !== _runGeneration || err.name === 'AbortError') return;
     $('content').innerHTML = `<div class="error-msg">Error: ${escapeHtml(err.message)}</div>`;
   } finally {
-    $('diffBtn').disabled = false;
-    $('diffBtn').querySelector('span').textContent = 'Compare';
+    if (runGeneration === _runGeneration) {
+      $('diffBtn').disabled = false;
+      $('diffBtn').querySelector('span').textContent = 'Compare';
+    }
   }
 };
 
@@ -1150,7 +1575,12 @@ $('content').addEventListener('click', event => {
   }
 });
 
-$('specSelect').addEventListener('change', loadVersions);
+$('specSelect').addEventListener('change', () => {
+  _resetForSelectionChange();
+  loadVersions();
+});
+$('v1Select').addEventListener('change', _resetForSelectionChange);
+$('v2Select').addEventListener('change', _resetForSelectionChange);
 $('diffBtn').addEventListener('click', () => window.runDiff());
 $('refreshBtn').addEventListener('click', () => window.runDiff(true));
 $('downloadBtn').addEventListener('click', downloadSpec);
