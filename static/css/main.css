@@ -1574,7 +1574,11 @@ html[data-theme="light"] .theme-icon-moon {
   transform: translateX(-50%);
 }
 
-.lightbox-controls button {
+.lightbox-controls button,
+.lightbox-controls .lightbox-original {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 34px;
   height: 32px;
   border: 0;
@@ -1582,9 +1586,12 @@ html[data-theme="light"] .theme-icon-moon {
   color: var(--text-muted);
   background: transparent;
   font-size: 17px;
+  text-decoration: none;
+  cursor: pointer;
 }
 
-.lightbox-controls button:hover {
+.lightbox-controls button:hover,
+.lightbox-controls .lightbox-original:hover {
   color: var(--text);
   background: var(--bg-subtle);
 }
@@ -1592,6 +1599,15 @@ html[data-theme="light"] .theme-icon-moon {
 .lightbox-controls .lightbox-reset {
   min-width: 50px;
   font: 650 9px var(--font-mono);
+}
+
+.lightbox-controls .lightbox-original {
+  padding: 0 11px;
+  font: 650 9px var(--font-mono);
+}
+
+.lightbox-controls .lightbox-original[hidden] {
+  display: none;
 }
 
 /* Toasts and change navigation */

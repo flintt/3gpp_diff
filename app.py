@@ -48,8 +48,8 @@ logger = logging.getLogger("3gpp_diff")
 app = Flask(__name__, static_folder="static")
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 3600
 
-DIFF_CACHE_SCHEMA = 19
-PARSED_CACHE_SCHEMA = 9
+DIFF_CACHE_SCHEMA = 20
+PARSED_CACHE_SCHEMA = 10
 
 # ThreadPoolExecutor for background downloads & precomputations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -1063,8 +1063,8 @@ def api_image(spec, version, filename):
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".svg": "image/svg+xml",
-        ".wmf": "application/x-msmetafile",
-        ".emf": "application/x-msmetafile",
+        ".wmf": "image/wmf",
+        ".emf": "image/emf",
         ".bmp": "image/bmp",
         ".tiff": "image/tiff",
         ".tif": "image/tiff",
@@ -1074,6 +1074,8 @@ def api_image(spec, version, filename):
         image_path.parent,
         image_path.name,
         mimetype=mimetype,
+        as_attachment=request.args.get("download") == "1",
+        download_name=image_path.name,
         max_age=86400,
         conditional=True,
     )

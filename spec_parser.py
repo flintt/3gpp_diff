@@ -5,8 +5,18 @@ import re
 import subprocess
 import tempfile
 import hashlib
+import logging
+import os
+import shutil
+import sys
+import uuid
 from collections import defaultdict
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_VECTOR_IMAGE_EXTENSIONS = (".emf", ".wmf")
+_VECTOR_PREVIEW_SUFFIX = ".preview.png"
 
 _TEXT_CONTENT_TAGS = (
     '{*}t',
@@ -607,50 +617,150 @@ def _extract_images_from_docx(
     return clause_images
 
 
-def _convert_emf_to_png(cache_dir, clause_images):
-    """Convert all EMF/WMF images in cache_dir to PNG using Inkscape."""
-    emf_files = list(cache_dir.glob("*.emf")) + list(cache_dir.glob("*.wmf"))
-    if not emf_files:
+def _vector_preview_path(vector_path):
+    return vector_path.with_name(f"{vector_path.stem}{_VECTOR_PREVIEW_SUFFIX}")
+
+
+def _convert_vectors_with_libreoffice(pending):
+    """Render metafiles through LibreOffice's graphic engine.
+
+    LibreOffice preserves Office drawing records that Inkscape occasionally
+    misinterprets (for example, missing punctuation in EMF text).  pyuno runs
+    in a helper process so native conversion failures cannot crash a web
+    worker.
+    """
+    helper = Path(__file__).with_name("libreoffice_image_converter.py")
+    command = [sys.executable, str(helper)]
+    for source in pending:
+        command.extend((str(source), str(_vector_preview_path(source))))
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=min(600, max(120, len(pending) * 8)),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("LibreOffice image preview conversion failed: %s", exc)
         return
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        logger.warning(
+            "LibreOffice image preview conversion was incomplete: %s",
+            detail[:1000],
+        )
 
-    pending = [path for path in emf_files if not path.with_suffix(".png").exists()]
-    if pending:
+
+def _is_emf_content(path):
+    """Identify EMF data even when LibreOffice gave it a .wmf extension."""
+    try:
+        with path.open("rb") as source:
+            header = source.read(44)
+    except OSError:
+        return False
+    return (
+        len(header) >= 44
+        and header[:4] == b"\x01\x00\x00\x00"
+        and header[40:44] == b" EMF"
+    )
+
+
+def _promote_preview(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _convert_vectors_with_inkscape(pending):
+    """High-resolution fallback for systems without a working UNO bridge."""
+    with tempfile.TemporaryDirectory(prefix="3gpp-inkscape-images-") as tempdir:
+        temp_root = Path(tempdir)
+        aliases = {}
+        for source in pending:
+            suffix = ".emf" if _is_emf_content(source) else source.suffix.lower()
+            alias = temp_root / f"{source.stem}.preview{suffix}"
+            shutil.copyfile(source, alias)
+            aliases[alias] = _vector_preview_path(source)
+
         try:
-            subprocess.run(
-                ["inkscape", "--export-type=png", *(str(path) for path in pending)],
+            result = subprocess.run(
+                [
+                    "inkscape",
+                    "--export-type=png",
+                    "--export-dpi=300",
+                    *(str(path) for path in aliases),
+                ],
                 capture_output=True,
-                timeout=min(300, max(60, len(pending) * 10)),
+                text=True,
+                timeout=min(600, max(120, len(aliases) * 10)),
             )
-        except Exception:
-            pass
+            if result.returncode != 0:
+                logger.warning(
+                    "Inkscape image preview batch failed: %s",
+                    str(result.stderr or result.stdout or result.returncode)[:1000],
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Inkscape image preview conversion failed: %s", exc)
+            return
 
-    # A malformed vector may make a batch incomplete. Retry only the missing
-    # outputs individually so one bad figure does not hide every other image.
-    for emf_path in pending:
-        png_path = emf_path.with_suffix(".png")
-        if png_path.exists():
-            continue
-        try:
-            subprocess.run(
-                ["inkscape", str(emf_path), "--export-filename", str(png_path)],
-                capture_output=True,
-                timeout=60,
-            )
-        except Exception:
-            continue
+        # A malformed vector may make a batch incomplete. Retry only missing
+        # outputs so one bad figure does not hide every other image.
+        for alias, destination in aliases.items():
+            rendered = alias.with_suffix(".png")
+            if not rendered.exists():
+                try:
+                    subprocess.run(
+                        [
+                            "inkscape",
+                            str(alias),
+                            "--export-dpi=300",
+                            "--export-filename",
+                            str(rendered),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=90,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+            if rendered.exists() and rendered.stat().st_size:
+                _promote_preview(rendered, destination)
 
-    for emf_path in emf_files:
-        png_path = emf_path.with_suffix(".png")
-        if png_path.exists():
-            emf_path.unlink()
+
+def _convert_emf_to_png(cache_dir, clause_images):
+    """Create faithful browser previews while retaining original vectors."""
+    vector_files = sorted(
+        path
+        for path in Path(cache_dir).iterdir()
+        if path.is_file() and path.suffix.lower() in _VECTOR_IMAGE_EXTENSIONS
+    )
+    if vector_files:
+        pending = [
+            path for path in vector_files if not _vector_preview_path(path).exists()
+        ]
+        if pending:
+            _convert_vectors_with_libreoffice(pending)
+            missing = [
+                path for path in pending if not _vector_preview_path(path).exists()
+            ]
+            if missing:
+                _convert_vectors_with_inkscape(missing)
 
     for images in clause_images.values():
         for img in images:
             src = img["src"]
-            if src.lower().endswith((".emf", ".wmf")):
-                png_name = Path(src).stem + ".png"
-                if (cache_dir / png_name).exists():
-                    img["src"] = png_name
+            if src.lower().endswith(_VECTOR_IMAGE_EXTENSIONS):
+                original_name = Path(src).name
+                preview_path = _vector_preview_path(Path(cache_dir) / original_name)
+                img["original_src"] = original_name
+                if preview_path.exists():
+                    img["src"] = preview_path.name
 
 
 def _save_image(zip_file, target, cache_dir, clause_id, image_prefix=""):
@@ -667,14 +777,7 @@ def _save_image(zip_file, target, cache_dir, clause_id, image_prefix=""):
             cache_path.write_bytes(img_data)
 
         src = img_filename
-        # If this image was previously converted from EMF/WMF to PNG
-        # (file in cache is PNG but original ZIP name is EMF), use PNG ref
-        if img_filename.lower().endswith(('.emf', '.wmf')):
-            png_path = cache_dir / (Path(img_filename).stem + '.png')
-            if png_path.exists():
-                src = png_path.name
-
-        return {
+        image_info = {
             'id': img_filename,
             'src': src,
             'alt': f'Figure in clause {clause_id}',
@@ -683,6 +786,13 @@ def _save_image(zip_file, target, cache_dir, clause_id, image_prefix=""):
             # genuinely changed technical figure.
             'sha256': hashlib.sha256(img_data).hexdigest(),
         }
+        if img_filename.lower().endswith(_VECTOR_IMAGE_EXTENSIONS):
+            preview_path = _vector_preview_path(cache_path)
+            image_info['original_src'] = img_filename
+            if preview_path.exists():
+                image_info['src'] = preview_path.name
+
+        return image_info
     except Exception:
         return None
 

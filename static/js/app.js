@@ -188,13 +188,16 @@ async function fetchDiffWithProgress(spec, v1, v2, refresh) {
 let _lbZoom = 1;
 let _lbPan = { x: 0, y: 0, dragging: false, startX: 0, startY: 0 };
 
-function openLightbox(src, alt) {
+function openLightbox(src, alt, originalSrc = '') {
   const lb = document.getElementById('lightbox');
   const img = document.getElementById('lightboxImg');
   const caption = document.getElementById('lightboxCaption');
+  const original = document.getElementById('lightboxOriginal');
   img.src = src;
   img.alt = alt || '';
   caption.textContent = alt || '';
+  original.hidden = !originalSrc;
+  original.href = originalSrc || '';
   lb.classList.add('open');
   document.body.style.overflow = 'hidden';
   _lbZoom = 1;
@@ -208,6 +211,9 @@ function closeLightbox() {
   lb.classList.remove('open');
   document.body.style.overflow = '';
   document.getElementById('lightboxImg').src = '';
+  const original = document.getElementById('lightboxOriginal');
+  original.hidden = true;
+  original.href = '';
 }
 
 window.zoomLightbox = function(dir) {
@@ -264,8 +270,11 @@ function renderImageThumbnails(images, spec, version) {
   let html = '<div class="clause-images">';
   for (const img of images) {
     const src = `/api/image/${spec}/${version}/${img.src}`;
+    const originalSrc = img.original_src
+      ? `/api/image/${spec}/${version}/${img.original_src}?download=1`
+      : '';
     const alt = img.alt || '';
-    html += `<button class="clause-image" type="button" data-image-src="${escapeHtml(src)}" data-image-alt="${escapeHtml(alt)}" aria-label="Open figure ${escapeHtml(alt)}">
+    html += `<button class="clause-image" type="button" data-image-src="${escapeHtml(src)}" data-image-original="${escapeHtml(originalSrc)}" data-image-alt="${escapeHtml(alt)}" aria-label="Open figure ${escapeHtml(alt)}">
       <img data-src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" loading="lazy">
     </button>`;
   }
@@ -1563,7 +1572,11 @@ $('tocTree').addEventListener('click', event => {
 $('content').addEventListener('click', event => {
   const imageButton = event.target.closest('[data-image-src]');
   if (imageButton) {
-    openLightbox(imageButton.dataset.imageSrc, imageButton.dataset.imageAlt);
+    openLightbox(
+      imageButton.dataset.imageSrc,
+      imageButton.dataset.imageAlt,
+      imageButton.dataset.imageOriginal,
+    );
     return;
   }
 

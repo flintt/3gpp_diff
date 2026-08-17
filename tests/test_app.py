@@ -37,6 +37,43 @@ def sample_diff():
     }
 
 
+class ImageApiTests(unittest.TestCase):
+    def test_serves_preview_inline_and_original_vector_as_download(self):
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            image_dir = root / "cache" / "images" / "23.222" / "15.0.0"
+            image_dir.mkdir(parents=True)
+            (image_dir / "image7.preview.png").write_bytes(b"preview")
+            (image_dir / "image7.emf").write_bytes(b"vector")
+            try:
+                os.chdir(root)
+                client = app_module.app.test_client()
+                with mock.patch.object(
+                    app_module,
+                    "send_from_directory",
+                    return_value=app_module.Response(b"image"),
+                ) as send:
+                    preview = client.get(
+                        "/api/image/23.222/15.0.0/image7.preview.png"
+                    )
+                    preview_options = send.call_args.kwargs
+                    original = client.get(
+                        "/api/image/23.222/15.0.0/image7.emf?download=1"
+                    )
+                    original_options = send.call_args.kwargs
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview_options["mimetype"], "image/png")
+        self.assertFalse(preview_options["as_attachment"])
+        self.assertEqual(original.status_code, 200)
+        self.assertEqual(original_options["mimetype"], "image/emf")
+        self.assertTrue(original_options["as_attachment"])
+        self.assertEqual(original_options["download_name"], "image7.emf")
+
+
 class DiffApiCacheTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

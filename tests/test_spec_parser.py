@@ -13,7 +13,9 @@ from spec_parser import (
     _element_text,
     _extract_clause_id,
     _heading_level,
+    _is_emf_content,
     _merge_images,
+    _vector_preview_path,
     convert_doc_to_docx,
 )
 
@@ -243,28 +245,65 @@ class ClauseIdParsingTests(unittest.TestCase):
         self.assertEqual(parsed["release"], 19)
         self.assertEqual(parsed["title"], "Example service (Release 19)")
 
-    def test_converts_vector_figures_in_one_inkscape_batch(self):
+    def test_converts_vector_figures_with_libreoffice_and_keeps_originals(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             images = [{"src": f"figure{index}.emf"} for index in range(8)]
             for image in images:
                 (root / image["src"]).write_bytes(b"vector")
 
-            def fake_inkscape(command, **_kwargs):
-                for value in command:
-                    path = Path(value)
-                    if path.suffix.lower() == ".emf":
-                        path.with_suffix(".png").write_bytes(b"png")
+            def fake_libreoffice(paths):
+                for path in paths:
+                    _vector_preview_path(path).write_bytes(b"png")
 
             with mock.patch(
-                "spec_parser.subprocess.run", side_effect=fake_inkscape
-            ) as inkscape:
+                "spec_parser._convert_vectors_with_libreoffice",
+                side_effect=fake_libreoffice,
+            ) as libreoffice:
                 _convert_emf_to_png(root, {"1": images})
 
-            self.assertEqual(inkscape.call_count, 1)
-            self.assertIn("--export-type=png", inkscape.call_args.args[0])
-            self.assertTrue(all(image["src"].endswith(".png") for image in images))
-            self.assertEqual(list(root.glob("*.emf")), [])
+            libreoffice.assert_called_once()
+            self.assertTrue(
+                all(image["src"].endswith(".preview.png") for image in images)
+            )
+            self.assertTrue(
+                all(image["original_src"].endswith(".emf") for image in images)
+            )
+            self.assertEqual(len(list(root.glob("*.emf"))), len(images))
+
+    def test_inkscape_fallback_corrects_mislabeled_emf_extension(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            source = root / "figure.wmf"
+            header = bytearray(44)
+            header[:4] = b"\x01\x00\x00\x00"
+            header[40:44] = b" EMF"
+            source.write_bytes(header)
+            images = [{"src": source.name}]
+            commands = []
+
+            def fake_inkscape(command, **_kwargs):
+                commands.append(command)
+                for value in command:
+                    path = Path(value)
+                    if path.name.endswith(".preview.emf"):
+                        path.with_suffix(".png").write_bytes(b"png")
+                return mock.Mock(returncode=0, stderr="", stdout="")
+
+            with mock.patch(
+                "spec_parser._convert_vectors_with_libreoffice"
+            ), mock.patch("spec_parser.subprocess.run", side_effect=fake_inkscape):
+                _convert_emf_to_png(root, {"1": images})
+
+            self.assertTrue(_is_emf_content(source))
+            self.assertTrue(source.exists())
+            self.assertEqual(images[0]["src"], "figure.preview.png")
+            self.assertTrue(
+                any(
+                    str(value).endswith("figure.preview.emf")
+                    for value in commands[0]
+                )
+            )
 
     def test_libreoffice_conversion_uses_an_isolated_profile(self):
         with tempfile.TemporaryDirectory() as tempdir:
