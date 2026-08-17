@@ -22,6 +22,31 @@ const compareVersions = (left, right) => {
   return 0;
 };
 
+function isValidVersionPair(v1 = $('v1Select').value, v2 = $('v2Select').value) {
+  return Boolean(v1 && v2 && v1 !== v2 && compareVersions(v1, v2) < 0);
+}
+
+function comparisonPairOptionsHtml(currentOldVersion, currentNewVersion) {
+  const versions = [...state.versions].sort(
+    (left, right) => compareVersions(right.version, left.version),
+  );
+  let html = '';
+  for (const newVersion of versions) {
+    for (const oldVersion of versions) {
+      if (compareVersions(oldVersion.version, newVersion.version) >= 0) continue;
+      const selected = (
+        oldVersion.version === currentOldVersion
+        && newVersion.version === currentNewVersion
+      ) ? ' selected' : '';
+      const label = oldVersion.release !== newVersion.release
+        ? `Rel-${oldVersion.release} → Rel-${newVersion.release}`
+        : `v${oldVersion.version} → v${newVersion.version}`;
+      html += `<option value="${escapeHtml(`${oldVersion.version}|${newVersion.version}`)}"${selected}>${escapeHtml(label)}</option>`;
+    }
+  }
+  return html;
+}
+
 const THEME_STORAGE_KEY = '3gpp-delta-theme';
 
 function applyTheme(theme, persist = false) {
@@ -726,6 +751,34 @@ async function ensureFullDiffData() {
   }
 }
 
+async function setUnchangedVisibility(show, options = {}) {
+  const checkbox = $('uncToggle');
+  const shouldShow = Boolean(show);
+  if (!checkbox) return false;
+
+  if (shouldShow && state.diffData?.view === 'changes') {
+    checkbox.disabled = true;
+    try {
+      await ensureFullDiffData();
+    } catch (error) {
+      if (checkbox.isConnected) checkbox.checked = false;
+      if (error.name !== 'AbortError') {
+        showToast(`Unable to load unchanged clauses: ${error.message}`, 'error');
+      }
+      return false;
+    } finally {
+      if (checkbox.isConnected) checkbox.disabled = false;
+    }
+  }
+
+  if (!checkbox.isConnected) return false;
+  checkbox.checked = shouldShow;
+  _showUnchanged = shouldShow;
+  startClauseRendering(shouldShow);
+  if (options.scroll !== false) $('content').scrollTo({top: 0});
+  return true;
+}
+
 function queueWordDiff(element, node, generation) {
   if (element.dataset.wordDiffState) return;
   element.dataset.wordDiffState = 'queued';
@@ -840,33 +893,44 @@ function renderDiff(diffData) {
       <input type="checkbox" id="${toggleId}" ${_showUnchanged ? 'checked' : ''}> Show ${stats.unchanged} unchanged
     </label>`;
   }
+  const pairOptionsHtml = comparisonPairOptionsHtml(
+    diffData.old_version,
+    diffData.new_version,
+  );
+  const pairSwitcherHtml = pairOptionsHtml
+    ? `<label class="comparison-switcher" for="comparisonPairSelect">
+        <span>Version pair</span>
+        <select id="comparisonPairSelect" aria-label="Switch comparison version pair">
+          ${pairOptionsHtml}
+        </select>
+      </label>`
+    : '';
   $('statsBar').innerHTML = `
     <span class="stat stat-total" id="statTotal">${total} total clauses</span>
     <span class="stat stat-added" id="statAdded">+${stats.added} added</span>
     <span class="stat stat-deleted" id="statDeleted">-${stats.deleted} deleted</span>
     <span class="stat stat-modified" id="statModified">~${stats.modified} modified</span>
+    ${pairSwitcherHtml}
     ${toggleHtml}
   `;
   $('statsBar').hidden = false;
 
+  const pairSelect = $('comparisonPairSelect');
+  if (pairSelect) {
+    pairSelect.addEventListener('change', () => {
+      const [oldVersion, newVersion] = pairSelect.value.split('|');
+      if (!oldVersion || !newVersion) return;
+      $('v1Select').value = oldVersion;
+      $('v2Select').value = newVersion;
+      handleVersionSelectionChange();
+    });
+  }
+
   const uncCb = $(toggleId);
   if (uncCb) {
     uncCb.addEventListener('change', async () => {
-      if (uncCb.checked && state.diffData?.view === 'changes') {
-        uncCb.disabled = true;
-        try {
-          await ensureFullDiffData();
-        } catch (error) {
-          uncCb.checked = false;
-          if (error.name !== 'AbortError') showToast(`Unable to load unchanged clauses: ${error.message}`, 'error');
-        } finally {
-          if (uncCb.isConnected) uncCb.disabled = false;
-        }
-      }
-      if (!uncCb.isConnected) return;
-      _showUnchanged = uncCb.checked;
-      startClauseRendering(_showUnchanged);
-      $('content').scrollTo({top: 0});
+      await setUnchangedVisibility(uncCb.checked);
+      updateCurrentComparisonURL(true);
     });
   }
 
@@ -878,7 +942,6 @@ function renderDiff(diffData) {
   _activeTocIndex = -1;
   $('tocTree').innerHTML = '<div class="toc-empty"><p>Building clause index…</p></div>';
   $('tocSearch').hidden = true;
-  $('tocSearchInput').value = '';
   updateTocSearchSummary();
   const html = `<div class="diff-header">
     <h2>${escapeHtml(diffData.title || '')}</h2>
@@ -906,6 +969,7 @@ function renderDiff(diffData) {
       if (_allClauseNodes !== tocNodes) return;
       renderToc(diffData.clauses, flat);
       $('tocSearch').hidden = false;
+      if ($('tocSearchInput').value.trim()) window.filterToc();
     });
   }));
 }
@@ -1389,19 +1453,39 @@ window.navChanged = function(dir) {
 };
 
 // ===================== URL DEEP LINKING =====================
-function _updateURL(spec, v1, v2, clause = '', replace = false) {
+function _updateURL(spec, v1, v2, clause = '', replace = false, viewState = {}) {
   const params = new URLSearchParams();
+  const filterQuery = viewState.filterQuery ?? $('tocSearchInput')?.value.trim() ?? '';
+  const showUnchanged = viewState.showUnchanged ?? _showUnchanged;
   if (spec) params.set('spec', spec);
   if (v1) params.set('v1', v1);
   if (v2) params.set('v2', v2);
   if (clause) params.set('clause', clause);
+  if (filterQuery) params.set('q', filterQuery);
+  if (showUnchanged) params.set('unchanged', '1');
   const qs = params.toString();
   const url = qs ? `${location.pathname}?${qs}` : location.pathname;
   if (`${location.pathname}${location.search}` === url) return;
   history[replace ? 'replaceState' : 'pushState'](null, '', url);
 }
 
+function updateCurrentComparisonURL(replace = true) {
+  if (!state.diffData) return;
+  const clause = new URLSearchParams(location.search).get('clause') || '';
+  _updateURL(
+    state.diffData.spec,
+    state.diffData.old_version,
+    state.diffData.new_version,
+    clause,
+    replace,
+  );
+}
+
 function _resetWorkspace() {
+  clearTimeout(_versionSwitchTimer);
+  _versionSwitchTimer = null;
+  _comparisonActive = false;
+  _isComparing = false;
   _runGeneration += 1;
   _versionLoadGeneration += 1;
   _renderGeneration += 1;
@@ -1435,7 +1519,7 @@ function _resetWorkspace() {
   $('tocSearchInput').value = '';
   $('refreshBtn').hidden = true;
   $('clauseNav').classList.remove('visible');
-  $('diffBtn').disabled = !($('v1Select').value && $('v2Select').value);
+  $('diffBtn').disabled = !isValidVersionPair();
   $('diffBtn').querySelector('span').textContent = 'Compare';
   setMobileToc(false);
 }
@@ -1451,6 +1535,8 @@ async function _restoreFromURL() {
   const spec = params.get('spec');
   const v1 = params.get('v1');
   const v2 = params.get('v2');
+  const filterQuery = params.get('q') || '';
+  const showUnchanged = params.get('unchanged') === '1';
   if (!spec) {
     await loadSpecs();
     return;
@@ -1464,9 +1550,10 @@ async function _restoreFromURL() {
 
   if (v1) $('v1Select').value = v1;
   if (v2) $('v2Select').value = v2;
+  $('tocSearchInput').value = filterQuery;
 
   if (v1 && v2 && v1 !== v2) {
-    window.runDiff();
+    window.runDiff(false, {showUnchanged});
   }
 }
 
@@ -1475,10 +1562,13 @@ window.addEventListener('popstate', () => {
   const spec = params.get('spec');
   const v1 = params.get('v1');
   const v2 = params.get('v2');
+  const filterQuery = params.get('q') || '';
+  const showUnchanged = params.get('unchanged') === '1';
   _resetWorkspace();
   if (spec && v1 && v2) {
     $('specSelect').value = spec;
     state.currentSpec = spec;
+    $('tocSearchInput').value = filterQuery;
     loadVersions().then(loaded => {
       const current = new URLSearchParams(location.search);
       if (!loaded || current.get('spec') !== spec || current.get('v1') !== v1 || current.get('v2') !== v2) {
@@ -1486,19 +1576,27 @@ window.addEventListener('popstate', () => {
       }
       $('v1Select').value = v1;
       $('v2Select').value = v2;
-      window.runDiff();
+      window.runDiff(false, {showUnchanged});
     });
   }
 });
 
 // ===================== MAIN FLOW =====================
 let _runGeneration = 0;
+let _comparisonActive = false;
+let _isComparing = false;
+let _versionSwitchTimer = null;
 
-window.runDiff = async function(refresh) {
+window.runDiff = async function(refresh = false, options = {}) {
+  clearTimeout(_versionSwitchTimer);
+  _versionSwitchTimer = null;
   const spec = state.currentSpec;
   const v1 = $('v1Select').value;
   const v2 = $('v2Select').value;
-  const requestedClause = new URLSearchParams(location.search).get('clause') || '';
+  const currentParams = new URLSearchParams(location.search);
+  const requestedClause = options.requestedClause ?? currentParams.get('clause') ?? '';
+  const filterQuery = options.filterQuery ?? $('tocSearchInput').value.trim();
+  const restoreUnchanged = options.showUnchanged ?? _showUnchanged;
 
   if (!v1 || !v2) {
     showToast('Please select both versions', 'error');
@@ -1510,17 +1608,14 @@ window.runDiff = async function(refresh) {
     return;
   }
 
-  const p1 = v1.split('.').map(Number);
-  const p2 = v2.split('.').map(Number);
-  for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
-    const a = p1[i] || 0, b = p2[i] || 0;
-    if (a > b) {
-      showToast('Old version must be earlier than new version', 'error');
-      return;
-    }
-    if (a < b) break;
+  if (compareVersions(v1, v2) >= 0) {
+    showToast('Old version must be earlier than new version', 'error');
+    return;
   }
 
+  _comparisonActive = true;
+  _isComparing = true;
+  $('tocSearchInput').value = filterQuery;
   $('diffBtn').disabled = true;
   $('refreshBtn').hidden = true;
   $('diffBtn').querySelector('span').textContent = 'Loading…';
@@ -1533,16 +1628,24 @@ window.runDiff = async function(refresh) {
     state.diffData = diff;
     renderDiff(diff);
     $('refreshBtn').hidden = false;
-    _updateURL(spec, v1, v2, requestedClause);
+    if (restoreUnchanged) {
+      await setUnchangedVisibility(true, {scroll: false});
+      if (runGeneration !== _runGeneration) return;
+    }
+    _updateURL(spec, v1, v2, requestedClause, false, {
+      filterQuery,
+      showUnchanged: _showUnchanged,
+    });
     if (requestedClause) {
-      window.scrollToClause(requestedClause, {updateURL: false});
+      await window.scrollToClause(requestedClause, {updateURL: false});
     }
   } catch (err) {
     if (runGeneration !== _runGeneration || err.name === 'AbortError') return;
     $('content').innerHTML = `<div class="error-msg">Error: ${escapeHtml(err.message)}</div>`;
   } finally {
     if (runGeneration === _runGeneration) {
-      $('diffBtn').disabled = false;
+      _isComparing = false;
+      $('diffBtn').disabled = !isValidVersionPair();
       $('diffBtn').querySelector('span').textContent = 'Compare';
     }
   }
@@ -1559,7 +1662,10 @@ window.closeLightbox = closeLightbox;
   if (searchInput) {
     searchInput.addEventListener('input', () => {
       clearTimeout(_filterTimer);
-      _filterTimer = setTimeout(window.filterToc, 200);
+      _filterTimer = setTimeout(() => {
+        window.filterToc();
+        updateCurrentComparisonURL(true);
+      }, 200);
     });
   }
 }
@@ -1592,8 +1698,26 @@ $('specSelect').addEventListener('change', () => {
   _resetForSelectionChange();
   loadVersions();
 });
-$('v1Select').addEventListener('change', _resetForSelectionChange);
-$('v2Select').addEventListener('change', _resetForSelectionChange);
+
+function handleVersionSelectionChange() {
+  clearTimeout(_versionSwitchTimer);
+  _versionSwitchTimer = null;
+  const validPair = isValidVersionPair();
+  $('diffBtn').disabled = _isComparing || !validPair;
+  if (!_comparisonActive || !validPair) return;
+
+  const v1 = $('v1Select').value;
+  const v2 = $('v2Select').value;
+  // Let users change both selectors without eagerly loading the intermediate
+  // pair; a single-selector change still switches the comparison promptly.
+  _versionSwitchTimer = setTimeout(() => {
+    if ($('v1Select').value !== v1 || $('v2Select').value !== v2) return;
+    window.runDiff();
+  }, 250);
+}
+
+$('v1Select').addEventListener('change', handleVersionSelectionChange);
+$('v2Select').addEventListener('change', handleVersionSelectionChange);
 $('diffBtn').addEventListener('click', () => window.runDiff());
 $('refreshBtn').addEventListener('click', () => window.runDiff(true));
 $('downloadBtn').addEventListener('click', downloadSpec);

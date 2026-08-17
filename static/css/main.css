@@ -456,11 +456,43 @@ html[data-theme="light"] .theme-icon-moon {
   background: var(--amber-soft);
 }
 
+.comparison-switcher {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.comparison-switcher select {
+  width: 158px;
+  height: 30px;
+  flex: 0 0 158px;
+  border: 1px solid rgba(90, 140, 255, 0.38);
+  border-radius: var(--radius-sm);
+  padding: 0 26px 0 9px;
+  color: var(--blue-bright);
+  background: var(--blue-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.comparison-switcher select:hover {
+  border-color: var(--blue);
+}
+
 .unchanged-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
   color: var(--text-muted);
   font-size: 11px;
   cursor: pointer;
@@ -1996,7 +2028,18 @@ html[data-theme="light"] .clause-nav {
   }
 
   .stats-bar {
+    overflow-x: auto;
     padding-left: 208px;
+    scrollbar-width: none;
+  }
+
+  .stats-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .comparison-switcher {
+    order: -1;
+    margin-left: 0;
   }
 
   .toc {
@@ -2123,6 +2166,10 @@ html[data-theme="light"] .clause-nav {
   .unchanged-toggle {
     margin-left: 0;
     white-space: nowrap;
+  }
+
+  .comparison-switcher {
+    margin-left: 0;
   }
 
   .toc,
