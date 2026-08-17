@@ -470,53 +470,33 @@ html[data-theme="light"] .theme-icon-moon {
   white-space: nowrap;
 }
 
-.comparison-switcher select {
-  width: 128px;
-  height: 30px;
-  flex: 0 0 128px;
+.current-version-pair,
+.pair-shortcut-btn {
+  display: inline-flex;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
   border: 1px solid rgba(90, 140, 255, 0.38);
-  border-radius: var(--radius-sm);
-  padding: 0 26px 0 9px;
+  border-radius: 999px;
+  padding: 0 10px;
   color: var(--blue-bright);
   background: var(--blue-soft);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: normal;
   text-transform: none;
 }
 
-.comparison-switcher select:hover {
+.current-version-pair {
   border-color: var(--blue);
-}
-
-.comparison-switcher > i {
-  color: var(--text-faint);
-  font: 700 11px var(--font-mono);
-  font-style: normal;
-}
-
-.pair-switch-btn {
-  height: 30px;
-  flex: 0 0 auto;
-  border: 1px solid var(--blue);
-  border-radius: var(--radius-sm);
-  padding: 0 10px;
   color: #fff;
   background: var(--blue);
-  font-size: 10px;
-  font-weight: 750;
 }
 
-.pair-switch-btn:hover:not(:disabled) {
+.pair-shortcut-btn:hover {
   border-color: var(--blue-bright);
-  background: var(--blue-bright);
-}
-
-.pair-switch-btn:disabled {
-  border-color: var(--line);
-  color: var(--text-faint);
-  background: var(--bg-elevated);
-  cursor: default;
+  color: #fff;
+  background: var(--blue);
 }
 
 .unchanged-toggle {

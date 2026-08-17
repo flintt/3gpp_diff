@@ -26,15 +26,51 @@ function isValidVersionPair(v1 = $('v1Select').value, v2 = $('v2Select').value) 
   return Boolean(v1 && v2 && v1 !== v2 && compareVersions(v1, v2) < 0);
 }
 
-function comparisonVersionOptionsHtml(selectedVersion) {
+function comparisonPairLabel(oldVersion, newVersion) {
+  const releases = new Map();
+  for (const version of state.versions) {
+    releases.set(version.release, (releases.get(version.release) || 0) + 1);
+  }
+  const endpointLabel = version => releases.get(version.release) > 1
+    ? `v${version.version}`
+    : `Rel-${version.release}`;
+  return `${endpointLabel(oldVersion)} → ${endpointLabel(newVersion)}`;
+}
+
+function nearbyComparisonPairs(currentOldVersion, currentNewVersion) {
   const versions = [...state.versions].sort(
-    (left, right) => compareVersions(right.version, left.version),
+    (left, right) => compareVersions(left.version, right.version),
   );
-  return versions.map(version => {
-    const selected = version.version === selectedVersion ? ' selected' : '';
-    const label = `Rel-${version.release} (${version.version})`;
-    return `<option value="${escapeHtml(version.version)}"${selected}>${escapeHtml(label)}</option>`;
-  }).join('');
+  const oldIndex = versions.findIndex(version => version.version === currentOldVersion);
+  const newIndex = versions.findIndex(version => version.version === currentNewVersion);
+  if (oldIndex < 0 || newIndex <= oldIndex) return [];
+
+  const pairs = [];
+  const seen = new Set([`${currentOldVersion}|${currentNewVersion}`]);
+  const addPair = (leftIndex, rightIndex) => {
+    if (leftIndex < 0 || rightIndex >= versions.length || leftIndex >= rightIndex) return;
+    const oldVersion = versions[leftIndex];
+    const newVersion = versions[rightIndex];
+    const key = `${oldVersion.version}|${newVersion.version}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    pairs.push({oldVersion, newVersion});
+  };
+
+  // For an adjacent pair, offer the previous/next window and a wider range.
+  // For a wider range, offer its two nearest contractions instead.
+  if (oldIndex > 0) {
+    addPair(oldIndex - 1, oldIndex);
+    addPair(oldIndex - 1, newIndex);
+  }
+  if (newIndex - oldIndex > 1) {
+    addPair(oldIndex, newIndex - 1);
+    addPair(oldIndex + 1, newIndex);
+  } else if (newIndex < versions.length - 1) {
+    addPair(newIndex, newIndex + 1);
+    addPair(oldIndex, newIndex + 1);
+  }
+  return pairs;
 }
 
 const THEME_STORAGE_KEY = '3gpp-delta-theme';
@@ -883,19 +919,24 @@ function renderDiff(diffData) {
       <input type="checkbox" id="${toggleId}" ${_showUnchanged ? 'checked' : ''}> Show ${stats.unchanged} unchanged
     </label>`;
   }
-  const oldVersionOptionsHtml = comparisonVersionOptionsHtml(diffData.old_version);
-  const newVersionOptionsHtml = comparisonVersionOptionsHtml(diffData.new_version);
-  const pairSwitcherHtml = oldVersionOptionsHtml && newVersionOptionsHtml
-    ? `<div class="comparison-switcher" role="group" aria-label="Switch comparison versions">
-        <span>Switch versions</span>
-        <select id="comparisonOldVersion" aria-label="Baseline version">
-          ${oldVersionOptionsHtml}
-        </select>
-        <i aria-hidden="true">→</i>
-        <select id="comparisonNewVersion" aria-label="Revision version">
-          ${newVersionOptionsHtml}
-        </select>
-        <button class="pair-switch-btn" id="comparisonSwitchBtn" type="button">Switch</button>
+  const currentOldVersion = state.versions.find(
+    version => version.version === diffData.old_version,
+  );
+  const currentNewVersion = state.versions.find(
+    version => version.version === diffData.new_version,
+  );
+  const nearbyPairs = nearbyComparisonPairs(diffData.old_version, diffData.new_version);
+  const pairSwitcherHtml = currentOldVersion && currentNewVersion && nearbyPairs.length > 0
+    ? `<div class="comparison-switcher" role="group" aria-label="Nearby comparisons">
+        <span>Quick switch</span>
+        <strong class="current-version-pair" title="Current comparison">Current · ${escapeHtml(comparisonPairLabel(currentOldVersion, currentNewVersion))}</strong>
+        ${nearbyPairs.map(pair => `
+          <button class="pair-shortcut-btn" type="button"
+            data-old-version="${escapeHtml(pair.oldVersion.version)}"
+            data-new-version="${escapeHtml(pair.newVersion.version)}"
+            title="Compare v${escapeHtml(pair.oldVersion.version)} with v${escapeHtml(pair.newVersion.version)}">
+            ${escapeHtml(comparisonPairLabel(pair.oldVersion, pair.newVersion))}
+          </button>`).join('')}
       </div>`
     : '';
   $('statsBar').innerHTML = `
@@ -908,34 +949,13 @@ function renderDiff(diffData) {
   `;
   $('statsBar').hidden = false;
 
-  const oldVersionSelect = $('comparisonOldVersion');
-  const newVersionSelect = $('comparisonNewVersion');
-  const switchButton = $('comparisonSwitchBtn');
-  if (oldVersionSelect && newVersionSelect && switchButton) {
-    const updateSwitcher = () => {
-      const oldVersion = oldVersionSelect.value;
-      const newVersion = newVersionSelect.value;
-      for (const option of oldVersionSelect.options) {
-        option.disabled = compareVersions(option.value, newVersion) >= 0;
-      }
-      for (const option of newVersionSelect.options) {
-        option.disabled = compareVersions(oldVersion, option.value) >= 0;
-      }
-      const unchanged = (
-        oldVersion === diffData.old_version
-        && newVersion === diffData.new_version
-      );
-      switchButton.disabled = !isValidVersionPair(oldVersion, newVersion) || unchanged;
-    };
-    oldVersionSelect.addEventListener('change', updateSwitcher);
-    newVersionSelect.addEventListener('change', updateSwitcher);
-    switchButton.addEventListener('click', () => {
-      $('v1Select').value = oldVersionSelect.value;
-      $('v2Select').value = newVersionSelect.value;
-      window.runDiff();
-    });
-    updateSwitcher();
-  }
+  $('statsBar').querySelector('.comparison-switcher')?.addEventListener('click', event => {
+    const button = event.target.closest('.pair-shortcut-btn');
+    if (!button) return;
+    $('v1Select').value = button.dataset.oldVersion;
+    $('v2Select').value = button.dataset.newVersion;
+    window.runDiff();
+  });
 
   const uncCb = $(toggleId);
   if (uncCb) {
