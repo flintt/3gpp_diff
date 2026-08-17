@@ -26,25 +26,15 @@ function isValidVersionPair(v1 = $('v1Select').value, v2 = $('v2Select').value) 
   return Boolean(v1 && v2 && v1 !== v2 && compareVersions(v1, v2) < 0);
 }
 
-function comparisonPairOptionsHtml(currentOldVersion, currentNewVersion) {
+function comparisonVersionOptionsHtml(selectedVersion) {
   const versions = [...state.versions].sort(
     (left, right) => compareVersions(right.version, left.version),
   );
-  let html = '';
-  for (const newVersion of versions) {
-    for (const oldVersion of versions) {
-      if (compareVersions(oldVersion.version, newVersion.version) >= 0) continue;
-      const selected = (
-        oldVersion.version === currentOldVersion
-        && newVersion.version === currentNewVersion
-      ) ? ' selected' : '';
-      const label = oldVersion.release !== newVersion.release
-        ? `Rel-${oldVersion.release} → Rel-${newVersion.release}`
-        : `v${oldVersion.version} → v${newVersion.version}`;
-      html += `<option value="${escapeHtml(`${oldVersion.version}|${newVersion.version}`)}"${selected}>${escapeHtml(label)}</option>`;
-    }
-  }
-  return html;
+  return versions.map(version => {
+    const selected = version.version === selectedVersion ? ' selected' : '';
+    const label = `Rel-${version.release} (${version.version})`;
+    return `<option value="${escapeHtml(version.version)}"${selected}>${escapeHtml(label)}</option>`;
+  }).join('');
 }
 
 const THEME_STORAGE_KEY = '3gpp-delta-theme';
@@ -893,17 +883,20 @@ function renderDiff(diffData) {
       <input type="checkbox" id="${toggleId}" ${_showUnchanged ? 'checked' : ''}> Show ${stats.unchanged} unchanged
     </label>`;
   }
-  const pairOptionsHtml = comparisonPairOptionsHtml(
-    diffData.old_version,
-    diffData.new_version,
-  );
-  const pairSwitcherHtml = pairOptionsHtml
-    ? `<label class="comparison-switcher" for="comparisonPairSelect">
-        <span>Version pair</span>
-        <select id="comparisonPairSelect" aria-label="Switch comparison version pair">
-          ${pairOptionsHtml}
+  const oldVersionOptionsHtml = comparisonVersionOptionsHtml(diffData.old_version);
+  const newVersionOptionsHtml = comparisonVersionOptionsHtml(diffData.new_version);
+  const pairSwitcherHtml = oldVersionOptionsHtml && newVersionOptionsHtml
+    ? `<div class="comparison-switcher" role="group" aria-label="Switch comparison versions">
+        <span>Switch versions</span>
+        <select id="comparisonOldVersion" aria-label="Baseline version">
+          ${oldVersionOptionsHtml}
         </select>
-      </label>`
+        <i aria-hidden="true">→</i>
+        <select id="comparisonNewVersion" aria-label="Revision version">
+          ${newVersionOptionsHtml}
+        </select>
+        <button class="pair-switch-btn" id="comparisonSwitchBtn" type="button">Switch</button>
+      </div>`
     : '';
   $('statsBar').innerHTML = `
     <span class="stat stat-total" id="statTotal">${total} total clauses</span>
@@ -915,15 +908,33 @@ function renderDiff(diffData) {
   `;
   $('statsBar').hidden = false;
 
-  const pairSelect = $('comparisonPairSelect');
-  if (pairSelect) {
-    pairSelect.addEventListener('change', () => {
-      const [oldVersion, newVersion] = pairSelect.value.split('|');
-      if (!oldVersion || !newVersion) return;
-      $('v1Select').value = oldVersion;
-      $('v2Select').value = newVersion;
-      handleVersionSelectionChange();
+  const oldVersionSelect = $('comparisonOldVersion');
+  const newVersionSelect = $('comparisonNewVersion');
+  const switchButton = $('comparisonSwitchBtn');
+  if (oldVersionSelect && newVersionSelect && switchButton) {
+    const updateSwitcher = () => {
+      const oldVersion = oldVersionSelect.value;
+      const newVersion = newVersionSelect.value;
+      for (const option of oldVersionSelect.options) {
+        option.disabled = compareVersions(option.value, newVersion) >= 0;
+      }
+      for (const option of newVersionSelect.options) {
+        option.disabled = compareVersions(oldVersion, option.value) >= 0;
+      }
+      const unchanged = (
+        oldVersion === diffData.old_version
+        && newVersion === diffData.new_version
+      );
+      switchButton.disabled = !isValidVersionPair(oldVersion, newVersion) || unchanged;
+    };
+    oldVersionSelect.addEventListener('change', updateSwitcher);
+    newVersionSelect.addEventListener('change', updateSwitcher);
+    switchButton.addEventListener('click', () => {
+      $('v1Select').value = oldVersionSelect.value;
+      $('v2Select').value = newVersionSelect.value;
+      window.runDiff();
     });
+    updateSwitcher();
   }
 
   const uncCb = $(toggleId);
