@@ -456,6 +456,48 @@ html[data-theme="light"] .theme-icon-moon {
   background: var(--amber-soft);
 }
 
+.diff-layout-toggle {
+  display: inline-flex;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  white-space: nowrap;
+}
+
+.diff-layout-toggle > span {
+  padding: 0 8px 0 10px;
+  color: var(--text-faint);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.diff-layout-toggle button {
+  height: 100%;
+  border: 0;
+  border-left: 1px solid var(--line);
+  padding: 0 9px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.diff-layout-toggle button:hover {
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+.diff-layout-toggle button.active {
+  color: #fff;
+  background: var(--blue);
+}
+
 .comparison-switcher {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1280,6 +1322,10 @@ html[data-theme="light"] .theme-icon-moon {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+.diff-view-inline {
+  display: block;
+}
+
 .diff-pane {
   min-width: 0;
   overflow-x: auto;
@@ -1288,6 +1334,10 @@ html[data-theme="light"] .theme-icon-moon {
 
 .diff-pane + .diff-pane {
   border-left: 1px solid var(--line);
+}
+
+.diff-pane-inline {
+  overflow: visible;
 }
 
 .diff-line {
@@ -1315,6 +1365,10 @@ html[data-theme="light"] .theme-icon-moon {
   padding: 12px 17px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.diff-line-inline .diff-line-content {
+  cursor: help;
 }
 
 .diff-line.add {
@@ -1403,6 +1457,31 @@ html[data-theme="light"] .theme-icon-moon {
 .word-add {
   color: #91ecc8;
   background: rgba(71, 215, 161, 0.24);
+}
+
+.inline-word-content .word-del,
+.inline-word-content .word-add {
+  cursor: help;
+}
+
+.inline-image-version {
+  position: relative;
+  padding-top: 23px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inline-image-version > span {
+  position: absolute;
+  top: 7px;
+  left: 16px;
+  color: var(--text-faint);
+  font: 700 8px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.inline-image-version .clause-images {
+  border-bottom: 0;
 }
 
 .clause-images {
@@ -2047,6 +2126,7 @@ html[data-theme="light"] .clause-nav {
     display: none;
   }
 
+  .diff-layout-toggle,
   .comparison-switcher {
     order: -1;
     margin-left: 0;
@@ -2296,6 +2376,7 @@ html[data-theme="light"] .clause-nav {
 }
 
 @media (max-width: 430px) {
+  .diff-layout-toggle > span,
   .comparison-switcher > span {
     display: none;
   }

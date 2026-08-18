@@ -684,6 +684,7 @@ window.filterToc = async function() {
 
 // ===================== DIFF RENDER =====================
 let _showUnchanged = false;
+let _diffLayout = 'split';
 const CLAUSE_BATCH_SIZE = 36;
 let _allClauseNodes = [];
 let _renderNodes = [];
@@ -805,16 +806,74 @@ async function setUnchangedVisibility(show, options = {}) {
   return true;
 }
 
+async function setDiffLayout(layout, options = {}) {
+  const nextLayout = layout === 'inline' ? 'inline' : 'split';
+  if (_diffLayout === nextLayout || !state.diffData) return;
+
+  const content = $('content');
+  const contentTop = content.getBoundingClientRect().top;
+  const anchor = [...content.querySelectorAll('.clause-diff')].find(element => (
+    element.getBoundingClientRect().bottom > contentTop + 1
+  ));
+  const anchorIndex = anchor ? Number(anchor.dataset.clauseIndex) : null;
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - contentTop : 0;
+
+  _diffLayout = nextLayout;
+  document.querySelectorAll('[data-diff-layout]').forEach(button => {
+    const active = button.dataset.diffLayout === nextLayout;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  startClauseRendering(_showUnchanged);
+
+  if (anchorIndex !== null) {
+    const anchorPosition = _renderPositionByFlatIndex.get(anchorIndex);
+    if (anchorPosition !== undefined && _renderedClauseCount <= anchorPosition) {
+      appendClauseBatch(anchorPosition + 1);
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const restoredAnchor = document.getElementById(`clause-${anchorIndex}`);
+    if (restoredAnchor) {
+      content.scrollTop += restoredAnchor.getBoundingClientRect().top - contentTop - anchorOffset;
+    }
+  }
+
+  if ($('tocSearchInput').value.trim() && _tocRecords.length > 0) window.filterToc();
+  if (options.updateURL !== false) updateCurrentComparisonURL(true);
+}
+
+function addInlineVersionTooltips(element, oldVersion, newVersion) {
+  for (const deletion of element.querySelectorAll('.word-del')) {
+    deletion.title = `Only in v${oldVersion} (not in v${newVersion})`;
+  }
+  for (const addition of element.querySelectorAll('.word-add')) {
+    addition.title = `Only in v${newVersion} (not in v${oldVersion})`;
+  }
+}
+
 function queueWordDiff(element, node, generation) {
   if (element.dataset.wordDiffState) return;
   element.dataset.wordDiffState = 'queued';
   scheduleIdle(() => {
     if (generation !== _renderGeneration || !element.isConnected) return;
     const cells = element.querySelectorAll('.diff-word-content');
-    if (cells.length < 2) return;
-    const {leftHtml, rightHtml} = renderWordDiffHtml(node.old_body || '', node.new_body || '');
-    cells[0].innerHTML = leftHtml || escapeHtml(node.old_body || '');
-    cells[1].innerHTML = rightHtml || escapeHtml(node.new_body || '');
+    const {leftHtml, rightHtml, inlineHtml} = renderWordDiffHtml(
+      node.old_body || '',
+      node.new_body || '',
+    );
+    if (_diffLayout === 'inline') {
+      if (cells.length < 1) return;
+      cells[0].innerHTML = inlineHtml || escapeHtml(node.new_body || node.old_body || '');
+      addInlineVersionTooltips(
+        cells[0],
+        state.diffData?.old_version || '',
+        state.diffData?.new_version || '',
+      );
+    } else {
+      if (cells.length < 2) return;
+      cells[0].innerHTML = leftHtml || escapeHtml(node.old_body || '');
+      cells[1].innerHTML = rightHtml || escapeHtml(node.new_body || '');
+    }
     element.dataset.wordDiffState = 'done';
   });
 }
@@ -926,6 +985,11 @@ function renderDiff(diffData) {
     version => version.version === diffData.new_version,
   );
   const nearbyPairs = nearbyComparisonPairs(diffData.old_version, diffData.new_version);
+  const layoutToggleHtml = `<div class="diff-layout-toggle" role="group" aria-label="Diff layout">
+      <span>View</span>
+      <button type="button" data-diff-layout="split" aria-pressed="${_diffLayout === 'split'}" class="${_diffLayout === 'split' ? 'active' : ''}">Split</button>
+      <button type="button" data-diff-layout="inline" aria-pressed="${_diffLayout === 'inline'}" class="${_diffLayout === 'inline' ? 'active' : ''}">Inline</button>
+    </div>`;
   const pairSwitcherHtml = currentOldVersion && currentNewVersion && nearbyPairs.length > 0
     ? `<div class="comparison-switcher" role="group" aria-label="Nearby comparisons">
         <span>Quick switch</span>
@@ -944,10 +1008,16 @@ function renderDiff(diffData) {
     <span class="stat stat-added" id="statAdded">+${stats.added} added</span>
     <span class="stat stat-deleted" id="statDeleted">-${stats.deleted} deleted</span>
     <span class="stat stat-modified" id="statModified">~${stats.modified} modified</span>
+    ${layoutToggleHtml}
     ${pairSwitcherHtml}
     ${toggleHtml}
   `;
   $('statsBar').hidden = false;
+
+  $('statsBar').querySelector('.diff-layout-toggle')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-diff-layout]');
+    if (button) setDiffLayout(button.dataset.diffLayout);
+  });
 
   $('statsBar').querySelector('.comparison-switcher')?.addEventListener('click', event => {
     const button = event.target.closest('.pair-shortcut-btn');
@@ -1014,7 +1084,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     : null;
   const clauseId = `clause-${node._flatIndex}`;
   const idHtml = node.old_id
-    ? `<span class="clause-id clause-id-change" title="Clause identifier changed">
+    ? `<span class="clause-id clause-id-change" title="v${escapeHtml(oldVersion)}: ${escapeHtml(oldDisplay.id)}; v${escapeHtml(newVersion)}: ${escapeHtml(display.id)}">
         <span class="id-old">${escapeHtml(oldDisplay.id)}</span>
         <span aria-hidden="true">→</span>
         <span class="id-new">${escapeHtml(display.id)}</span>
@@ -1023,7 +1093,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const titleChanged = oldDisplay &&
     oldDisplay.title.replace(/\s+/g, ' ').trim() !== display.title.replace(/\s+/g, ' ').trim();
   const titleHtml = titleChanged
-    ? `<span class="clause-title title-change" title="Clause title changed">
+    ? `<span class="clause-title title-change" title="v${escapeHtml(oldVersion)}: ${escapeHtml(oldDisplay.title)}; v${escapeHtml(newVersion)}: ${escapeHtml(display.title)}">
         <span class="title-old">${escapeHtml(oldDisplay.title)}</span>
         <span class="title-change-arrow" aria-hidden="true">→</span>
         <span class="title-new">${escapeHtml(display.title)}</span>
@@ -1056,58 +1126,96 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   } else if (status === 'added') {
     const imgs = renderImageThumbnails(node.images, spec, newVersion);
     const body = node.body || '';
-    bodyHtml = `<div class="diff-view">
-      <div class="diff-pane diff-pane-old" aria-label="Previous version">
-        <div class="diff-empty">Clause did not exist in the old version</div>
-      </div>
-      <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
-        ${imgs}
-        <div class="diff-line add">
-          <span class="diff-line-num"></span>
-          <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+    bodyHtml = _diffLayout === 'inline'
+      ? `<div class="diff-view diff-view-inline">
+        <div class="diff-pane diff-pane-inline" aria-label="Added in version ${escapeHtml(newVersion)}">
+          ${imgs}
+          <div class="diff-line diff-line-inline add" title="Only in v${escapeHtml(newVersion)} (not in v${escapeHtml(oldVersion)})">
+            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+          </div>
         </div>
-      </div>
-    </div>`;
+      </div>`
+      : `<div class="diff-view">
+        <div class="diff-pane diff-pane-old" aria-label="Previous version">
+          <div class="diff-empty">Clause did not exist in the old version</div>
+        </div>
+        <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
+          ${imgs}
+          <div class="diff-line add">
+            <span class="diff-line-num"></span>
+            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+          </div>
+        </div>
+      </div>`;
   } else if (status === 'deleted') {
     const imgs = renderImageThumbnails(node.images, spec, oldVersion);
     const body = node.body || '';
-    bodyHtml = `<div class="diff-view">
-      <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
-        ${imgs}
-        <div class="diff-line del">
-          <span class="diff-line-num"></span>
-          <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+    bodyHtml = _diffLayout === 'inline'
+      ? `<div class="diff-view diff-view-inline">
+        <div class="diff-pane diff-pane-inline" aria-label="Removed after version ${escapeHtml(oldVersion)}">
+          ${imgs}
+          <div class="diff-line diff-line-inline del" title="Only in v${escapeHtml(oldVersion)} (not in v${escapeHtml(newVersion)})">
+            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+          </div>
         </div>
-      </div>
-      <div class="diff-pane diff-pane-new" aria-label="New version">
-        <div class="diff-empty">Clause removed in the new version</div>
-      </div>
-    </div>`;
+      </div>`
+      : `<div class="diff-view">
+        <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
+          ${imgs}
+          <div class="diff-line del">
+            <span class="diff-line-num"></span>
+            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+          </div>
+        </div>
+        <div class="diff-pane diff-pane-new" aria-label="New version">
+          <div class="diff-empty">Clause removed in the new version</div>
+        </div>
+      </div>`;
   } else if (status === 'modified') {
     const oldImgs = renderImageThumbnails(node.old_images, spec, oldVersion);
     const newImgs = renderImageThumbnails(node.new_images, spec, newVersion);
     const oldText = node.old_body || '';
     const newText = node.new_body || '';
 
-    let wordLeft, wordRight;
+    let wordLeft, wordRight, wordInline;
     if (skipWordDiff) {
-      wordLeft = wordRight = '';
+      wordLeft = wordRight = wordInline = '';
     } else {
       const result = renderWordDiffHtml(oldText, newText);
       wordLeft = result.leftHtml;
       wordRight = result.rightHtml;
+      wordInline = result.inlineHtml;
     }
 
-    bodyHtml = `<div class="diff-view">
-      <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
-        ${oldImgs}
-        <div class="diff-line"><div class="diff-word-content">${wordLeft || escapeHtml(oldText) || '(no content)'}</div></div>
-      </div>
-      <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
-        ${newImgs}
-        <div class="diff-line"><div class="diff-word-content">${wordRight || escapeHtml(newText) || '(no content)'}</div></div>
-      </div>
-    </div>`;
+    if (_diffLayout === 'inline') {
+      const oldImageGroup = oldImgs
+        ? `<div class="inline-image-version" title="Figures in v${escapeHtml(oldVersion)}">
+            <span>Figures in v${escapeHtml(oldVersion)}</span>${oldImgs}
+          </div>`
+        : '';
+      const newImageGroup = newImgs
+        ? `<div class="inline-image-version" title="Figures in v${escapeHtml(newVersion)}">
+            <span>Figures in v${escapeHtml(newVersion)}</span>${newImgs}
+          </div>`
+        : '';
+      bodyHtml = `<div class="diff-view diff-view-inline">
+        <div class="diff-pane diff-pane-inline" aria-label="Inline comparison of version ${escapeHtml(oldVersion)} with ${escapeHtml(newVersion)}">
+          ${oldImageGroup}${newImageGroup}
+          <div class="diff-line"><div class="diff-word-content inline-word-content">${wordInline || escapeHtml(newText || oldText) || '(no content)'}</div></div>
+        </div>
+      </div>`;
+    } else {
+      bodyHtml = `<div class="diff-view">
+        <div class="diff-pane diff-pane-old" aria-label="Version ${escapeHtml(oldVersion)}">
+          ${oldImgs}
+          <div class="diff-line"><div class="diff-word-content">${wordLeft || escapeHtml(oldText) || '(no content)'}</div></div>
+        </div>
+        <div class="diff-pane diff-pane-new" aria-label="Version ${escapeHtml(newVersion)}">
+          ${newImgs}
+          <div class="diff-line"><div class="diff-word-content">${wordRight || escapeHtml(newText) || '(no content)'}</div></div>
+        </div>
+      </div>`;
+    }
   }
 
   return `<article class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
@@ -1156,6 +1264,7 @@ function _renderHierarchicalDiff(oldText, newText, level) {
 
   let leftHtml = '';
   let rightHtml = '';
+  let inlineHtml = '';
   let oldChanged = [];
   let newChanged = [];
 
@@ -1164,6 +1273,7 @@ function _renderHierarchicalDiff(oldText, newText, level) {
     const nested = _renderHierarchicalDiff(oldChanged.join(''), newChanged.join(''), level + 1);
     leftHtml += nested.leftHtml;
     rightHtml += nested.rightHtml;
+    inlineHtml += nested.inlineHtml;
     oldChanged = [];
     newChanged = [];
   };
@@ -1174,6 +1284,7 @@ function _renderHierarchicalDiff(oldText, newText, level) {
       const equalHtml = escapeHtml(oldSegments.slice(oldStart, oldEnd).join(''));
       leftHtml += equalHtml;
       rightHtml += equalHtml;
+      inlineHtml += equalHtml;
     } else if (op === 'delete') {
       oldChanged.push(...oldSegments.slice(oldStart, oldEnd));
     } else if (op === 'insert') {
@@ -1181,7 +1292,7 @@ function _renderHierarchicalDiff(oldText, newText, level) {
     }
   }
   flushChangedBlock();
-  return {leftHtml, rightHtml};
+  return {leftHtml, rightHtml, inlineHtml};
 }
 
 function _renderExactTokenDiff(oldText, newText, allowMyers) {
@@ -1189,7 +1300,7 @@ function _renderExactTokenDiff(oldText, newText, allowMyers) {
   const b = tokenizeDiffText(newText);
   const n = a.length, m = b.length;
 
-  if (n === 0 && m === 0) return { leftHtml: '', rightHtml: '' };
+  if (n === 0 && m === 0) return {leftHtml: '', rightHtml: '', inlineHtml: ''};
 
   // Trim common prefix and suffix to reduce problem size
   let prefixLen = 0;
@@ -1210,11 +1321,12 @@ function _renderExactTokenDiff(oldText, newText, allowMyers) {
   if (!ops) return null;
 
   // Build HTML: prefix + diffed middle + suffix
-  let leftHtml = '', rightHtml = '';
+  let leftHtml = '', rightHtml = '', inlineHtml = '';
 
   const prefixHtml = escapeHtml(a.slice(0, prefixLen).join(''));
   leftHtml += prefixHtml;
   rightHtml += prefixHtml;
+  inlineHtml += prefixHtml;
 
   // Middle (diffed)
   for (const [op, s1, e1, s2, e2] of ops) {
@@ -1222,24 +1334,37 @@ function _renderExactTokenDiff(oldText, newText, allowMyers) {
       const equalHtml = escapeHtml(aMid.slice(s1, e1).join(''));
       leftHtml += equalHtml;
       rightHtml += equalHtml;
+      inlineHtml += equalHtml;
     } else if (op === 'delete') {
-      leftHtml += `<span class="word-del">${escapeHtml(aMid.slice(s1, e1).join(''))}</span>`;
+      const deletedHtml = `<span class="word-del">${escapeHtml(aMid.slice(s1, e1).join(''))}</span>`;
+      leftHtml += deletedHtml;
+      inlineHtml += deletedHtml;
     } else if (op === 'insert') {
-      rightHtml += `<span class="word-add">${escapeHtml(bMid.slice(s2, e2).join(''))}</span>`;
+      const addedHtml = `<span class="word-add">${escapeHtml(bMid.slice(s2, e2).join(''))}</span>`;
+      rightHtml += addedHtml;
+      inlineHtml += addedHtml;
     }
   }
 
   const suffixHtml = escapeHtml(a.slice(n - suffixLen).join(''));
   leftHtml += suffixHtml;
   rightHtml += suffixHtml;
+  inlineHtml += suffixHtml;
 
-  return { leftHtml, rightHtml };
+  return {leftHtml, rightHtml, inlineHtml};
 }
 
 function _renderCoarseDiff(oldText, newText) {
+  const leftHtml = oldText
+    ? `<span class="word-del word-diff-coarse">${escapeHtml(oldText)}</span>`
+    : '';
+  const rightHtml = newText
+    ? `<span class="word-add word-diff-coarse">${escapeHtml(newText)}</span>`
+    : '';
   return {
-    leftHtml: oldText ? `<span class="word-del word-diff-coarse">${escapeHtml(oldText)}</span>` : '',
-    rightHtml: newText ? `<span class="word-add word-diff-coarse">${escapeHtml(newText)}</span>` : '',
+    leftHtml,
+    rightHtml,
+    inlineHtml: leftHtml + rightHtml,
   };
 }
 
@@ -1488,12 +1613,14 @@ function _updateURL(spec, v1, v2, clause = '', replace = false, viewState = {}) 
   const params = new URLSearchParams();
   const filterQuery = viewState.filterQuery ?? $('tocSearchInput')?.value.trim() ?? '';
   const showUnchanged = viewState.showUnchanged ?? _showUnchanged;
+  const diffLayout = viewState.diffLayout ?? _diffLayout;
   if (spec) params.set('spec', spec);
   if (v1) params.set('v1', v1);
   if (v2) params.set('v2', v2);
   if (clause) params.set('clause', clause);
   if (filterQuery) params.set('q', filterQuery);
   if (showUnchanged) params.set('unchanged', '1');
+  if (diffLayout === 'inline') params.set('layout', 'inline');
   const qs = params.toString();
   const url = qs ? `${location.pathname}?${qs}` : location.pathname;
   if (`${location.pathname}${location.search}` === url) return;
@@ -1531,6 +1658,7 @@ function _resetWorkspace() {
   _tocSearchAbortController = null;
   state.diffData = null;
   _showUnchanged = false;
+  _diffLayout = 'split';
   _allClauseNodes = [];
   _renderNodes = [];
   _renderPositionByFlatIndex = new Map();
@@ -1568,6 +1696,7 @@ async function _restoreFromURL() {
   const v2 = params.get('v2');
   const filterQuery = params.get('q') || '';
   const showUnchanged = params.get('unchanged') === '1';
+  const diffLayout = params.get('layout') === 'inline' ? 'inline' : 'split';
   if (!spec) {
     await loadSpecs();
     return;
@@ -1584,7 +1713,7 @@ async function _restoreFromURL() {
   $('tocSearchInput').value = filterQuery;
 
   if (v1 && v2 && v1 !== v2) {
-    window.runDiff(false, {showUnchanged});
+    window.runDiff(false, {showUnchanged, diffLayout});
   }
 }
 
@@ -1595,6 +1724,7 @@ window.addEventListener('popstate', () => {
   const v2 = params.get('v2');
   const filterQuery = params.get('q') || '';
   const showUnchanged = params.get('unchanged') === '1';
+  const diffLayout = params.get('layout') === 'inline' ? 'inline' : 'split';
   _resetWorkspace();
   if (spec && v1 && v2) {
     $('specSelect').value = spec;
@@ -1607,7 +1737,7 @@ window.addEventListener('popstate', () => {
       }
       $('v1Select').value = v1;
       $('v2Select').value = v2;
-      window.runDiff(false, {showUnchanged});
+      window.runDiff(false, {showUnchanged, diffLayout});
     });
   }
 });
@@ -1628,6 +1758,9 @@ window.runDiff = async function(refresh = false, options = {}) {
   const requestedClause = options.requestedClause ?? currentParams.get('clause') ?? '';
   const filterQuery = options.filterQuery ?? $('tocSearchInput').value.trim();
   const restoreUnchanged = options.showUnchanged ?? _showUnchanged;
+  const restoreDiffLayout = options.diffLayout === 'inline' || (
+    options.diffLayout === undefined && _diffLayout === 'inline'
+  ) ? 'inline' : 'split';
 
   if (!v1 || !v2) {
     showToast('Please select both versions', 'error');
@@ -1657,6 +1790,7 @@ window.runDiff = async function(refresh = false, options = {}) {
     const diff = await fetchDiffWithProgress(spec, v1, v2, refresh);
     if (runGeneration !== _runGeneration) return;
     state.diffData = diff;
+    _diffLayout = restoreDiffLayout;
     renderDiff(diff);
     $('refreshBtn').hidden = false;
     if (restoreUnchanged) {
@@ -1666,6 +1800,7 @@ window.runDiff = async function(refresh = false, options = {}) {
     _updateURL(spec, v1, v2, requestedClause, false, {
       filterQuery,
       showUnchanged: _showUnchanged,
+      diffLayout: _diffLayout,
     });
     if (requestedClause) {
       await window.scrollToClause(requestedClause, {updateURL: false});
