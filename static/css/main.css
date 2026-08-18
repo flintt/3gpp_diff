@@ -1417,6 +1417,89 @@ html[data-theme="light"] .theme-icon-moon {
   background: rgba(5, 10, 18, 0.16);
 }
 
+.body-text-block {
+  white-space: pre-wrap;
+}
+
+.doc-table-wrap {
+  max-width: 100%;
+  margin: 12px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(5, 10, 18, 0.2);
+  white-space: normal;
+}
+
+.doc-table-wrap:first-child {
+  margin-top: 0;
+}
+
+.doc-table-wrap:last-child {
+  margin-bottom: 0;
+}
+
+.doc-table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  color: var(--text-muted);
+  font: 10.5px/1.45 var(--font-sans);
+}
+
+.doc-table th,
+.doc-table td {
+  min-width: 68px;
+  padding: 8px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.doc-table th {
+  color: var(--text);
+  background: var(--bg-subtle);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.015em;
+}
+
+.doc-table tr:last-child > * {
+  border-bottom: 0;
+}
+
+.doc-table tr > *:last-child {
+  border-right: 0;
+}
+
+.doc-table-row-added > * {
+  background: var(--green-soft);
+}
+
+.doc-table-row-removed > * {
+  background: var(--red-soft);
+}
+
+.doc-block-added,
+.doc-block-removed {
+  margin: 8px 0;
+  border-left: 2px solid;
+  padding-left: 10px;
+}
+
+.doc-block-added {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.doc-block-removed {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
 .clause-body.collapsed {
   position: relative;
   max-height: 155px;
@@ -2017,6 +2100,39 @@ html[data-theme="light"] .clause-body {
 
 html[data-theme="light"] .clause-body {
   background: #fbfcfe;
+}
+
+html[data-theme="light"] .doc-table-wrap {
+  border-color: #c8d3e2;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(43, 61, 88, 0.05);
+}
+
+html[data-theme="light"] .doc-table {
+  color: #3e4d63;
+}
+
+html[data-theme="light"] .doc-table th {
+  border-color: #cbd7e6;
+  color: #24334a;
+  background: #eaf1fa;
+}
+
+html[data-theme="light"] .doc-table td {
+  border-color: #d9e1ec;
+  background: #ffffff;
+}
+
+html[data-theme="light"] .doc-table tr:nth-child(even) td {
+  background: #f7f9fc;
+}
+
+html[data-theme="light"] .doc-table-row-added > * {
+  background: #eaf7f1 !important;
+}
+
+html[data-theme="light"] .doc-table-row-removed > * {
+  background: #fff0f2 !important;
 }
 
 html[data-theme="light"] .clause-body.collapsed::after {

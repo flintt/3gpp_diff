@@ -857,13 +857,15 @@ function queueWordDiff(element, node, generation) {
   scheduleIdle(() => {
     if (generation !== _renderGeneration || !element.isConnected) return;
     const cells = element.querySelectorAll('.diff-word-content');
-    const {leftHtml, rightHtml, inlineHtml} = renderWordDiffHtml(
+    const {leftHtml, rightHtml, inlineHtml} = renderBodyDiffHtml(
       node.old_body || '',
       node.new_body || '',
     );
     if (_diffLayout === 'inline') {
       if (cells.length < 1) return;
-      cells[0].innerHTML = inlineHtml || escapeHtml(node.new_body || node.old_body || '');
+      cells[0].innerHTML = inlineHtml || renderBodyContentHtml(
+        node.new_body || node.old_body || '',
+      );
       addInlineVersionTooltips(
         cells[0],
         state.diffData?.old_version || '',
@@ -871,8 +873,8 @@ function queueWordDiff(element, node, generation) {
       );
     } else {
       if (cells.length < 2) return;
-      cells[0].innerHTML = leftHtml || escapeHtml(node.old_body || '');
-      cells[1].innerHTML = rightHtml || escapeHtml(node.new_body || '');
+      cells[0].innerHTML = leftHtml || renderBodyContentHtml(node.old_body || '');
+      cells[1].innerHTML = rightHtml || renderBodyContentHtml(node.new_body || '');
     }
     element.dataset.wordDiffState = 'done';
   });
@@ -1075,6 +1077,196 @@ function renderDiff(diffData) {
   }));
 }
 
+function parsePipeTableRow(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return null;
+
+  const cells = [];
+  let value = '';
+  let escaped = false;
+  for (const character of trimmed.slice(1, -1)) {
+    if (escaped) {
+      value += character === 'n'
+        ? '\n'
+        : character === 't'
+          ? '\t'
+          : character === '|' || character === '\\'
+            ? character
+            : `\\${character}`;
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === '|') {
+      cells.push(value.trim());
+      value = '';
+    } else {
+      value += character;
+    }
+  }
+  if (escaped) value += '\\';
+  cells.push(value.trim());
+  return cells.length >= 1 ? cells : null;
+}
+
+function parseBodyBlocks(text) {
+  const lines = String(text || '').split('\n');
+  const blocks = [];
+  let textLines = [];
+  const flushText = () => {
+    if (textLines.length) blocks.push({type: 'text', text: textLines.join('\n')});
+    textLines = [];
+  };
+
+  for (let index = 0; index < lines.length;) {
+    const firstRow = parsePipeTableRow(lines[index]);
+    if (!firstRow) {
+      textLines.push(lines[index]);
+      index++;
+      continue;
+    }
+
+    flushText();
+    const rows = [firstRow];
+    index++;
+    while (index < lines.length) {
+      const row = parsePipeTableRow(lines[index]);
+      if (!row) break;
+      rows.push(row);
+      index++;
+    }
+    blocks.push({type: 'table', rows});
+  }
+  flushText();
+  return blocks;
+}
+
+function renderDocumentTable(rows, cellRenderer = value => escapeHtml(value), rowClass = () => '') {
+  const columnCount = Math.max(0, ...rows.map(row => row.length));
+  const hasHeader = rows.length > 1;
+  const body = rows.map((row, rowIndex) => {
+    const cells = [...row, ...Array(Math.max(0, columnCount - row.length)).fill('')];
+    const cellTag = hasHeader && rowIndex === 0 ? 'th' : 'td';
+    const scope = hasHeader && rowIndex === 0 ? ' scope="col"' : '';
+    const cellsHtml = cells.map((value, columnIndex) => {
+      const content = cellRenderer(value, rowIndex, columnIndex) || '&nbsp;';
+      return `<${cellTag}${scope}>${content}</${cellTag}>`;
+    }).join('');
+    const className = rowClass(rowIndex);
+    return `<tr${className ? ` class="${className}"` : ''}>${cellsHtml}</tr>`;
+  }).join('');
+  return `<div class="doc-table-wrap"><table class="doc-table">${body}</table></div>`;
+}
+
+function renderBodyBlock(block) {
+  if (!block) return '';
+  if (block.type === 'table') return renderDocumentTable(block.rows);
+  return block.text
+    ? `<div class="body-text-block">${escapeHtml(block.text)}</div>`
+    : '';
+}
+
+function renderBodyContentHtml(text) {
+  const value = String(text || '');
+  if (!value) return '(no content)';
+  return parseBodyBlocks(value).map(renderBodyBlock).join('');
+}
+
+function renderComparedTable(oldRows, newRows) {
+  const valueAt = (rows, rowIndex, columnIndex) => rows[rowIndex]?.[columnIndex] || '';
+  const diffCell = (oldValue, newValue, side) => {
+    const result = renderWordDiffHtml(oldValue, newValue);
+    const html = side === 'old'
+      ? result.leftHtml
+      : side === 'new'
+        ? result.rightHtml
+        : result.inlineHtml;
+    return html || escapeHtml(side === 'old' ? oldValue : newValue);
+  };
+
+  const leftHtml = renderDocumentTable(
+    oldRows,
+    (value, rowIndex, columnIndex) => diffCell(
+      value,
+      valueAt(newRows, rowIndex, columnIndex),
+      'old',
+    ),
+    rowIndex => rowIndex >= newRows.length ? 'doc-table-row-removed' : '',
+  );
+  const rightHtml = renderDocumentTable(
+    newRows,
+    (value, rowIndex, columnIndex) => diffCell(
+      valueAt(oldRows, rowIndex, columnIndex),
+      value,
+      'new',
+    ),
+    rowIndex => rowIndex >= oldRows.length ? 'doc-table-row-added' : '',
+  );
+
+  const rowCount = Math.max(oldRows.length, newRows.length);
+  const columnCount = Math.max(
+    0,
+    ...oldRows.map(row => row.length),
+    ...newRows.map(row => row.length),
+  );
+  const inlineRows = Array.from(
+    {length: rowCount},
+    () => Array(columnCount).fill(''),
+  );
+  const inlineHtml = renderDocumentTable(
+    inlineRows,
+    (_value, rowIndex, columnIndex) => diffCell(
+      valueAt(oldRows, rowIndex, columnIndex),
+      valueAt(newRows, rowIndex, columnIndex),
+      'inline',
+    ),
+    rowIndex => rowIndex >= oldRows.length
+      ? 'doc-table-row-added'
+      : rowIndex >= newRows.length
+        ? 'doc-table-row-removed'
+        : '',
+  );
+  return {leftHtml, rightHtml, inlineHtml};
+}
+
+function renderBodyDiffHtml(oldText, newText) {
+  const oldBlocks = parseBodyBlocks(oldText);
+  const newBlocks = parseBodyBlocks(newText);
+  const hasTable = [...oldBlocks, ...newBlocks].some(block => block.type === 'table');
+  if (!hasTable) return renderWordDiffHtml(oldText, newText);
+
+  let leftHtml = '';
+  let rightHtml = '';
+  let inlineHtml = '';
+  const blockCount = Math.max(oldBlocks.length, newBlocks.length);
+  for (let index = 0; index < blockCount; index++) {
+    const oldBlock = oldBlocks[index];
+    const newBlock = newBlocks[index];
+    if (oldBlock?.type === 'text' && newBlock?.type === 'text') {
+      const result = renderWordDiffHtml(oldBlock.text, newBlock.text);
+      leftHtml += `<div class="body-text-block">${result.leftHtml}</div>`;
+      rightHtml += `<div class="body-text-block">${result.rightHtml}</div>`;
+      inlineHtml += `<div class="body-text-block">${result.inlineHtml}</div>`;
+    } else if (oldBlock?.type === 'table' && newBlock?.type === 'table') {
+      const result = renderComparedTable(oldBlock.rows, newBlock.rows);
+      leftHtml += result.leftHtml;
+      rightHtml += result.rightHtml;
+      inlineHtml += result.inlineHtml;
+    } else {
+      if (oldBlock) {
+        const oldHtml = renderBodyBlock(oldBlock);
+        leftHtml += oldHtml;
+        inlineHtml += `<div class="doc-block-removed">${oldHtml}</div>`;
+      }
+      if (newBlock) {
+        const newHtml = renderBodyBlock(newBlock);
+        rightHtml += newHtml;
+        inlineHtml += `<div class="doc-block-added">${newHtml}</div>`;
+      }
+    }
+  }
+  return {leftHtml, rightHtml, inlineHtml};
+}
+
 function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const status = node.status || 'unchanged';
   const isMoved = status === 'modified' && node.change_type === 'moved';
@@ -1128,7 +1320,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     const imgs = renderImageThumbnails(node.images, spec, newVersion);
     const body = node.body || '';
     const collapsed = body.length > 300 ? ' collapsed' : '';
-    bodyHtml = imgs + `<div class="clause-body${collapsed}">${escapeHtml(body || '(no content)')}</div>`;
+    bodyHtml = imgs + `<div class="clause-body${collapsed}">${renderBodyContentHtml(body)}</div>`;
     if (body.length > 300) {
       bodyHtml += '<button class="expand-btn" type="button" data-action="expand-clause">Show more</button>';
     }
@@ -1140,7 +1332,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
         <div class="diff-pane diff-pane-inline" aria-label="Added in version ${escapeHtml(newVersion)}">
           ${imgs}
           <div class="diff-line diff-line-inline add" title="Only in v${escapeHtml(newVersion)} (not in v${escapeHtml(oldVersion)})">
-            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+            <div class="diff-line-content">${renderBodyContentHtml(body)}</div>
           </div>
         </div>
       </div>`
@@ -1152,7 +1344,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
           ${imgs}
           <div class="diff-line add">
             <span class="diff-line-num"></span>
-            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+            <div class="diff-line-content">${renderBodyContentHtml(body)}</div>
           </div>
         </div>
       </div>`;
@@ -1164,7 +1356,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
         <div class="diff-pane diff-pane-inline" aria-label="Removed after version ${escapeHtml(oldVersion)}">
           ${imgs}
           <div class="diff-line diff-line-inline del" title="Only in v${escapeHtml(oldVersion)} (not in v${escapeHtml(newVersion)})">
-            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+            <div class="diff-line-content">${renderBodyContentHtml(body)}</div>
           </div>
         </div>
       </div>`
@@ -1173,7 +1365,7 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
           ${imgs}
           <div class="diff-line del">
             <span class="diff-line-num"></span>
-            <span class="diff-line-content">${escapeHtml(body || '(no content)')}</span>
+            <div class="diff-line-content">${renderBodyContentHtml(body)}</div>
           </div>
         </div>
         <div class="diff-pane diff-pane-new" aria-label="New version">
@@ -1188,9 +1380,11 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
 
     let wordLeft, wordRight, wordInline;
     if (skipWordDiff) {
-      wordLeft = wordRight = wordInline = '';
+      wordLeft = renderBodyContentHtml(oldText);
+      wordRight = renderBodyContentHtml(newText);
+      wordInline = renderBodyContentHtml(newText || oldText);
     } else {
-      const result = renderWordDiffHtml(oldText, newText);
+      const result = renderBodyDiffHtml(oldText, newText);
       wordLeft = result.leftHtml;
       wordRight = result.rightHtml;
       wordInline = result.inlineHtml;

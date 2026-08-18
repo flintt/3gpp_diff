@@ -48,8 +48,8 @@ logger = logging.getLogger("3gpp_diff")
 app = Flask(__name__, static_folder="static")
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 3600
 
-DIFF_CACHE_SCHEMA = 21
-PARSED_CACHE_SCHEMA = 10
+DIFF_CACHE_SCHEMA = 23
+PARSED_CACHE_SCHEMA = 12
 
 
 def _static_asset_version() -> str:

@@ -15,6 +15,7 @@ from spec_parser import (
     _heading_level,
     _is_emf_content,
     _merge_images,
+    _table_to_text,
     _vector_preview_path,
     convert_doc_to_docx,
 )
@@ -127,6 +128,40 @@ class ClauseIdParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(_element_text(paragraph), "5GS\tvalue\nnon-breaking=E")
+
+    def test_tables_keep_rows_rectangular_and_flatten_cell_paragraphs(self):
+        table = etree.fromstring(
+            b'<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:tr><w:tc><w:p><w:r><w:t>Information element</w:t></w:r></w:p></w:tc>'
+            b'<w:tc><w:p><w:r><w:t>Description</w:t></w:r></w:p></w:tc></w:tr>'
+            b'<w:tr><w:tc><w:p><w:r><w:t>First</w:t></w:r></w:p>'
+            b'<w:p><w:r><w:t>second</w:t></w:r></w:p></w:tc>'
+            b'<w:tc><w:p><w:r><w:t>A | B</w:t></w:r></w:p></w:tc></w:tr>'
+            b'</w:tbl>'
+        )
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+        self.assertEqual(
+            _table_to_text(table, ns),
+            "| Information element | Description |\n"
+            "| First\\nsecond | A \\| B |",
+        )
+
+    def test_tables_expand_simple_horizontal_spans(self):
+        table = etree.fromstring(
+            b'<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr>'
+            b'<w:p><w:r><w:t>Wide heading</w:t></w:r></w:p></w:tc></w:tr>'
+            b'<w:tr><w:tc><w:p><w:r><w:t>Left</w:t></w:r></w:p></w:tc>'
+            b'<w:tc><w:p><w:r><w:t>Right</w:t></w:r></w:p></w:tc></w:tr>'
+            b'</w:tbl>'
+        )
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+        self.assertEqual(
+            _table_to_text(table, ns),
+            "| Wide heading |  |\n| Left | Right |",
+        )
 
     def test_images_are_merged_by_unique_source_position(self):
         tree = _build_tree([

@@ -464,8 +464,11 @@ def _element_text(element) -> str:
 
 def _table_to_text(table_elem, nsmap) -> str:
     """Convert a Word table XML element to formatted text.
-    
+
     Returns a pipe-delimited table representation suitable for diff display.
+    Cell paragraphs are flattened so a visual row always remains one logical
+    line. Horizontal spans get empty placeholder cells, allowing the browser
+    to reconstruct a stable rectangular table.
     """
     rows = table_elem.findall('.//w:tr', nsmap)
     if not rows:
@@ -480,10 +483,30 @@ def _table_to_text(table_elem, nsmap) -> str:
         for cell in cells:
             paragraphs = cell.findall('.//w:p', nsmap)
             text = '\n'.join(
-                part for part in (_element_text(p).strip() for p in paragraphs)
+                part for part in (
+                    ' '.join(_element_text(p).split()) for p in paragraphs
+                )
                 if part
             )
+            # Backslash escaping keeps literal pipes from being interpreted as
+            # additional columns by the lightweight browser renderer. Encoded
+            # newlines preserve paragraph structure without splitting a row.
+            text = (
+                text.replace('\\', '\\\\')
+                .replace('\n', '\\n')
+                .replace('|', '\\|')
+            )
             cell_texts.append(text)
+            grid_span = cell.find('./w:tcPr/w:gridSpan', nsmap)
+            if grid_span is not None:
+                value = grid_span.get(
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                    '1',
+                )
+                try:
+                    cell_texts.extend([''] * max(0, int(value) - 1))
+                except ValueError:
+                    pass
         table_rows.append(cell_texts)
     
     if not table_rows:
