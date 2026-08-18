@@ -37,6 +37,48 @@ def sample_diff():
     }
 
 
+class FrontendCachePolicyTests(unittest.TestCase):
+    def test_html_uses_fingerprinted_assets_and_bypasses_cdn_cache(self):
+        client = app_module.app.test_client()
+
+        response = client.get("/")
+        html = response.get_data(as_text=True)
+
+        self.assertIn(
+            f"/assets/{app_module.STATIC_ASSET_VERSION}/main.css", html
+        )
+        self.assertIn(
+            f"/assets/{app_module.STATIC_ASSET_VERSION}/app.js", html
+        )
+        self.assertNotIn("__STATIC_ASSET_VERSION__", html)
+        self.assertEqual(
+            response.headers["Cloudflare-CDN-Cache-Control"], "no-store"
+        )
+
+    def test_fingerprinted_assets_are_immutable(self):
+        client = app_module.app.test_client()
+
+        response = client.get(
+            f"/assets/{app_module.STATIC_ASSET_VERSION}/app.js"
+        )
+
+        expected = "public, max-age=31536000, immutable"
+        self.assertEqual(response.headers["Cache-Control"], expected)
+        self.assertEqual(
+            response.headers["Cloudflare-CDN-Cache-Control"], expected
+        )
+        response.close()
+
+    def test_dynamic_api_bypasses_cdn_cache(self):
+        client = app_module.app.test_client()
+
+        response = client.get("/api/specs")
+
+        self.assertEqual(
+            response.headers["Cloudflare-CDN-Cache-Control"], "no-store"
+        )
+
+
 class ImageApiTests(unittest.TestCase):
     def test_serves_preview_inline_and_original_vector_as_download(self):
         original_cwd = Path.cwd()

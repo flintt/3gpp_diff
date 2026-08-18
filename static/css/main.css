@@ -1179,6 +1179,10 @@ html[data-theme="light"] .theme-icon-moon {
   background: var(--amber);
 }
 
+.clause-diff.change-moved::before {
+  background: var(--cyan);
+}
+
 .clause-diff-header {
   position: relative;
   z-index: 1;
@@ -1280,6 +1284,11 @@ html[data-theme="light"] .theme-icon-moon {
   background: var(--green-soft);
 }
 
+.version-chip.moved {
+  color: var(--cyan);
+  background: rgba(69, 214, 198, 0.12);
+}
+
 .version-arrow-small {
   color: var(--text-faint);
   font-size: 9px;
@@ -1310,6 +1319,11 @@ html[data-theme="light"] .theme-icon-moon {
 .status-badge.modified {
   color: var(--amber);
   background: var(--amber-soft);
+}
+
+.status-badge.moved {
+  color: var(--cyan);
+  background: rgba(69, 214, 198, 0.12);
 }
 
 .status-badge.unchanged {

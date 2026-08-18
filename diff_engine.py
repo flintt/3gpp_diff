@@ -93,17 +93,30 @@ def diff_trees(
                 _new_parent_id=new_node.get("id", ""),
                 _context=_context,
             )
+            body_moved_to_child = _promote_parent_body_move(
+                old_node, new_node, children
+            )
+            comparison_old_node = old_node
+            if body_moved_to_child:
+                # The old parent became a container. Its former content is
+                # compared at the new child, so it must not also appear here
+                # as a complete deletion.
+                comparison_old_node = {
+                    **old_node,
+                    "body": new_node.get("body", ""),
+                    "images": new_node.get("images", []),
+                }
             identifier_changed = old_node.get("id") != nid
-            if identifier_changed or _is_modified(old_node, new_node):
+            if identifier_changed or _is_modified(comparison_old_node, new_node):
                 result_node = {
                     "id": nid,
                     "title": new_node["title"],
                     "old_title": old_node["title"],
                     "level": new_node["level"],
                     "status": "modified",
-                    "old_body": old_node.get("body", ""),
+                    "old_body": comparison_old_node.get("body", ""),
                     "new_body": new_node.get("body", ""),
-                    "old_images": old_node.get("images", []),
+                    "old_images": comparison_old_node.get("images", []),
                     "new_images": new_node.get("images", []),
                     "children": children,
                 }
@@ -174,6 +187,75 @@ def diff_trees(
         ordered_result.append(node)
     ordered_result.extend(pending_deleted)
     return ordered_result
+
+
+def _promote_parent_body_move(old_node: dict, new_node: dict, child_results: list) -> bool:
+    """Recognize content moved from a leaf into one new direct child.
+
+    A release sometimes turns an existing clause into a container and moves
+    its nearly unchanged body into a newly numbered child (for example,
+    ``5`` -> ``5.1``). Ordinary ID matching correctly pairs the two parent
+    nodes, but would then render the whole old body as deleted and the child as
+    added. Only promote a unique, high-confidence candidate so a genuine split
+    into several new clauses remains an addition/deletion.
+    """
+    if old_node.get("id") != new_node.get("id"):
+        return False
+    if old_node.get("children") or not new_node.get("children"):
+        return False
+
+    old_body = _normalize_whitespace(old_node.get("body", ""))
+    new_parent_body = _normalize_whitespace(new_node.get("body", ""))
+    if not 120 <= len(old_body) <= 50_000:
+        return False
+    if len(new_parent_body) > max(80, len(old_body) // 10):
+        return False
+
+    result_by_identity = defaultdict(list)
+    for result in child_results:
+        if result.get("status") == "added":
+            result_by_identity[(result.get("id"), result.get("title"))].append(result)
+
+    candidates = []
+    old_title = _title_for_matching(old_node)
+    for new_child in new_node.get("children", []):
+        matches = result_by_identity.get(
+            (new_child.get("id"), new_child.get("title")), ()
+        )
+        if len(matches) != 1:
+            continue
+        new_body = _normalize_whitespace(new_child.get("body", ""))
+        if not 120 <= len(new_body) <= 50_000:
+            continue
+        if min(len(old_body), len(new_body)) / max(len(old_body), len(new_body)) < 0.7:
+            continue
+        title_score = difflib.SequenceMatcher(
+            None, old_title, _title_for_matching(new_child)
+        ).ratio()
+        if title_score < 0.55:
+            continue
+        body_score = difflib.SequenceMatcher(None, old_body, new_body).ratio()
+        if body_score < 0.88:
+            continue
+        candidates.append((new_child, matches[0]))
+
+    if len(candidates) != 1:
+        return False
+
+    new_child, result = candidates[0]
+    result.update({
+        "old_title": old_node.get("title", ""),
+        "status": "modified",
+        "change_type": "moved",
+        "old_id": old_node.get("id", ""),
+        "old_body": old_node.get("body", ""),
+        "new_body": new_child.get("body", ""),
+        "old_images": old_node.get("images", []),
+        "new_images": new_child.get("images", []),
+    })
+    result.pop("body", None)
+    result.pop("images", None)
+    return True
 
 
 _GENERIC_RENUMBER_TITLES = {

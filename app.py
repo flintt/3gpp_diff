@@ -48,8 +48,21 @@ logger = logging.getLogger("3gpp_diff")
 app = Flask(__name__, static_folder="static")
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 3600
 
-DIFF_CACHE_SCHEMA = 20
+DIFF_CACHE_SCHEMA = 21
 PARSED_CACHE_SCHEMA = 10
+
+
+def _static_asset_version() -> str:
+    """Build a cache-busting fingerprint for the frontend release."""
+    digest = hashlib.sha256()
+    for relative_path in ("css/main.css", "js/app.js"):
+        asset_path = Path(app.static_folder) / relative_path
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(asset_path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+STATIC_ASSET_VERSION = _static_asset_version()
 
 # ThreadPoolExecutor for background downloads & precomputations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -751,15 +764,39 @@ def compress_large_json(response):
     return response
 
 
+@app.after_request
+def apply_cdn_cache_policy(response):
+    """Keep dynamic responses fresh and fingerprinted assets cacheable."""
+    if request.path == "/":
+        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
+    elif request.path.startswith("/api/") and not request.path.startswith("/api/image/"):
+        response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
+    elif request.path.startswith(f"/assets/{STATIC_ASSET_VERSION}/"):
+        immutable = "public, max-age=31536000, immutable"
+        response.headers["Cache-Control"] = immutable
+        response.headers["Cloudflare-CDN-Cache-Control"] = immutable
+    return response
+
+
+@app.route("/assets/<version>/<filename>")
+def versioned_frontend_asset(version: str, filename: str):
+    """Serve release-specific asset URLs that can be cached indefinitely."""
+    assets = {"main.css": "css/main.css", "app.js": "js/app.js"}
+    relative_path = assets.get(filename)
+    if version != STATIC_ASSET_VERSION or relative_path is None:
+        abort(404)
+    return send_from_directory(app.static_folder, relative_path)
+
+
 @app.route("/")
 def index():
     """Serve the frontend."""
-    response = send_from_directory(app.static_folder, "index.html")
-    # The HTML shell must revalidate so deployments can point at the latest
-    # JS/CSS, while those larger static assets may remain cached for an hour.
-    response.cache_control.max_age = 0
-    response.cache_control.no_cache = True
-    return response
+    index_path = Path(app.static_folder) / "index.html"
+    html = index_path.read_text(encoding="utf-8").replace(
+        "__STATIC_ASSET_VERSION__", STATIC_ASSET_VERSION
+    )
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/specs")

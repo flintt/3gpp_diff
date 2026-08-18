@@ -472,6 +472,70 @@ class DiffTreeMatchingTests(unittest.TestCase):
         self.assertEqual(result[0]["old_id"], "5.1")
         self.assertEqual(result[0]["id"], "5.2")
 
+    def test_tracks_parent_body_moved_into_a_new_child(self):
+        old_body = (
+            "The functional security model defines security domains and the "
+            "reference points between those domains. " * 8
+        )
+        new_body = old_body + "The model also identifies the trust boundaries."
+        result = diff_trees(
+            [clause("5", "5 Functional security model", old_body)],
+            [clause(
+                "5",
+                "5 Functional security model",
+                children=[
+                    clause(
+                        "5.1",
+                        "5.1 General functional security model",
+                        new_body,
+                    ),
+                    clause("5.2", "5.2 Supporting RNAA", "New supporting content"),
+                ],
+            )],
+        )
+
+        parent = result[0]
+        moved, added = parent["children"]
+        self.assertEqual(parent["status"], "unchanged")
+        self.assertEqual(parent["body"], "")
+        self.assertEqual(moved["status"], "modified")
+        self.assertEqual(moved["change_type"], "moved")
+        self.assertEqual(moved["old_id"], "5")
+        self.assertEqual(moved["id"], "5.1")
+        self.assertEqual(moved["old_body"], old_body)
+        self.assertEqual(moved["new_body"], new_body)
+        self.assertEqual(added["status"], "added")
+        self.assertEqual(
+            compute_diff_stats(result),
+            {"added": 1, "deleted": 0, "modified": 1, "unchanged": 1},
+        )
+
+    def test_does_not_guess_when_parent_body_matches_multiple_new_children(self):
+        body = (
+            "The functional security model defines security domains and the "
+            "reference points between those domains. " * 8
+        )
+        result = diff_trees(
+            [clause("5", "5 Functional security model", body)],
+            [clause(
+                "5",
+                "5 Functional security model",
+                children=[
+                    clause("5.1", "5.1 General functional security model", body),
+                    clause("5.2", "5.2 Functional security model details", body),
+                ],
+            )],
+        )
+
+        self.assertEqual(result[0]["status"], "modified")
+        self.assertEqual(
+            [node["status"] for node in result[0]["children"]],
+            ["added", "added"],
+        )
+        self.assertTrue(all(
+            "change_type" not in node for node in result[0]["children"]
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

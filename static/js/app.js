@@ -1077,6 +1077,8 @@ function renderDiff(diffData) {
 
 function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   const status = node.status || 'unchanged';
+  const isMoved = status === 'modified' && node.change_type === 'moved';
+  const statusStyle = isMoved ? 'moved' : status;
   const id = node.id || '';
   const display = getClauseDisplayParts(node);
   const oldDisplay = node.old_title
@@ -1104,11 +1106,18 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
   let versionContextHtml = '';
 
   if (status === 'modified') {
-    versionContextHtml = `<span class="clause-version-context" aria-label="Comparing version ${escapeHtml(oldVersion)} with ${escapeHtml(newVersion)}">
-      <span class="version-chip old">v${escapeHtml(oldVersion || 'Old')}</span>
-      <span class="version-arrow-small" aria-hidden="true">→</span>
-      <span class="version-chip new">v${escapeHtml(newVersion || 'New')}</span>
-    </span>`;
+    if (isMoved) {
+      const moveDescription = `Moved in v${newVersion}: clause ${oldDisplay?.id || node.old_id || ''} → ${display.id}`;
+      versionContextHtml = `<span class="clause-version-context" aria-label="${escapeHtml(moveDescription)}" title="${escapeHtml(moveDescription)}">
+        <span class="version-chip moved">Moved in v${escapeHtml(newVersion || 'New')}</span>
+      </span>`;
+    } else {
+      versionContextHtml = `<span class="clause-version-context" aria-label="Comparing version ${escapeHtml(oldVersion)} with ${escapeHtml(newVersion)}">
+        <span class="version-chip old">v${escapeHtml(oldVersion || 'Old')}</span>
+        <span class="version-arrow-small" aria-hidden="true">→</span>
+        <span class="version-chip new">v${escapeHtml(newVersion || 'New')}</span>
+      </span>`;
+    }
   } else if (status === 'added') {
     versionContextHtml = `<span class="clause-version-context"><span class="version-chip new">Added in v${escapeHtml(newVersion || 'New')}</span></span>`;
   } else if (status === 'deleted') {
@@ -1218,12 +1227,12 @@ function clauseDiffHtml(node, spec, oldVersion, newVersion, skipWordDiff) {
     }
   }
 
-  return `<article class="clause-diff ${status}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
+  return `<article class="clause-diff ${status}${isMoved ? ' change-moved' : ''}" id="${clauseId}" data-clause-id="${escapeHtml(id)}" data-clause-index="${node._flatIndex}">
     <div class="clause-diff-header">
       ${idHtml}
       ${versionContextHtml}
       ${titleHtml}
-      <span class="status-badge ${status}">${status}</span>
+      <span class="status-badge ${statusStyle}">${statusStyle}</span>
     </div>
     ${bodyHtml}
   </article>`;
