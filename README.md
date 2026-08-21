@@ -2,8 +2,6 @@
 
 面向 3GPP 技术规范的本地化版本对比工具。它从 3GPP 官方归档下载 Word 文稿，解析章节、正文、表格和技术图，并以章节树、Split Diff 或 Inline Diff 的方式展示不同 Release 之间的变化。
 
-在线实例：<https://hq5001.mingdan.uk/>
-
 > 本项目不是 3GPP 官方产品。规范文稿及其内容版权归相应权利人所有。
 
 ## 主要功能
@@ -52,7 +50,7 @@ sudo apt install curl libreoffice inkscape
 ## 安装
 
 ```bash
-git clone https://github.com/flintt/3gpp_diff.git
+git clone YOUR_REPOSITORY_URL
 cd 3gpp_diff
 
 python3 -m venv .venv
@@ -106,6 +104,15 @@ cloudflared tunnel --url http://localhost:5001
 前端 JS/CSS 使用内容指纹路径；新版本会产生新的 URL，避免浏览器或 Cloudflare 继续显示旧文件。HTML 和动态 API 明确禁止 CDN 缓存，指纹静态资源则允许长期缓存。
 
 应用自身没有账号、登录或权限控制。如果实例暴露到公网，建议在 Cloudflare Access 或上游反向代理中增加访问保护。
+
+Tunnel 凭据、访问令牌和实际部署域名应保存在仓库之外，不要写入 README、启动脚本或前端代码。
+
+## 安全与隐私
+
+- 不要提交 `.env`、私钥、证书、访问令牌或带凭据的配置文件。
+- `cache/` 可能包含下载的规范文稿、解析结果和运行日志，仅用于本地运行并已被 Git 忽略。
+- 提交前建议使用 `git diff --staged` 检查待提交内容，并使用专门的 secret scanner 检查仓库和 Git 历史。
+- 如果敏感信息已经进入 Git 历史，仅删除当前文件并不能彻底移除；应立即轮换相应凭据，再谨慎重写历史。
 
 ## 缓存目录
 
@@ -185,4 +192,3 @@ npx playwright install chromium
 - 复杂的纵向合并、嵌套 Word 表格会按简化结构展示。
 - WMF/EMF 不能由主流浏览器原生显示，因此页面使用 PNG 预览，同时提供原始矢量文件下载。
 - 大型规范第一次解析和第一次生成版本组合 diff 会消耗较多时间和磁盘空间。
-
